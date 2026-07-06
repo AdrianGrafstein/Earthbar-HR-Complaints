@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Earthbar · HR Case Management</title>
+<style>
+  :root{
+    --green:#2E5E4E;--green-dk:#204237;--light:#E4EEE9;--light2:#F3F8F5;
+    --grey:#667085;--line:#DDE5E1;--bg:#F7FAF8;--white:#fff;
+    --amber:#B7791F;--amber-bg:#FDF3E0;--red:#B42318;--red-bg:#FEECEB;--blue:#175CD3;--blue-bg:#EAF1FD;
+    --radius:12px;--shadow:0 1px 3px rgba(16,24,40,.08),0 1px 2px rgba(16,24,40,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:#1D2939;background:var(--bg);line-height:1.5;font-size:15px}
+  header.top{background:var(--green);color:#fff;padding:14px 24px;display:flex;align-items:center;gap:14px}
+  header.top .logo{width:30px;height:30px;border-radius:8px;background:#fff;color:var(--green);display:grid;place-items:center;font-weight:800}
+  header.top h1{font-size:17px;margin:0;font-weight:700}
+  header.top .tag{font-size:12px;opacity:.85;background:rgba(255,255,255,.15);padding:4px 10px;border-radius:999px}
+  nav{background:#fff;border-bottom:1px solid var(--line);padding:0 16px;display:flex;gap:2px;overflow-x:auto}
+  nav button{border:none;background:none;padding:14px 16px;font-size:14px;font-weight:600;color:var(--grey);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
+  nav button.active{color:var(--green);border-bottom-color:var(--green)}
+  main{max-width:1080px;margin:0 auto;padding:24px 16px 60px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;margin-bottom:18px}
+  h2.section{font-size:20px;margin:2px 0 4px}
+  .muted{color:var(--grey);font-size:14px}
+  .row{display:flex;gap:16px;flex-wrap:wrap}
+  .col{flex:1;min-width:240px}
+  label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}
+  input[type=text],textarea,select{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit;background:#fff}
+  textarea{min-height:110px;resize:vertical}
+  .radio-cards{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+  .radio-card{flex:1;min-width:220px;border:1.5px solid var(--line);border-radius:11px;padding:14px;cursor:pointer;transition:.15s;background:#fff}
+  .radio-card.sel{border-color:var(--green);background:var(--light2);box-shadow:0 0 0 3px rgba(46,94,78,.12)}
+  .radio-card b{display:block;margin-bottom:3px}
+  .btn{background:var(--green);color:#fff;border:none;padding:11px 20px;border-radius:9px;font-size:14px;font-weight:700;cursor:pointer}
+  .btn:hover{background:var(--green-dk)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.sec{background:#fff;color:var(--green);border:1.5px solid var(--green)}
+  .btn.ghost{background:#fff;color:var(--grey);border:1px solid var(--line)}
+  .btn.sm{padding:7px 12px;font-size:12.5px}
+  .btn.ms{background:#2F2F2F;display:inline-flex;align-items:center;gap:10px}
+  .btn.ms:hover{background:#000}
+  .pill{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700}
+  .pill.dot::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+  .s-Submitted{background:var(--blue-bg);color:var(--blue)} .s-Triage{background:var(--amber-bg);color:var(--amber)}
+  .s-Assigned{background:var(--light);color:var(--green)} .s-UnderReview{background:#EAF1FD;color:var(--blue)}
+  .s-Action{background:#FDF3E0;color:var(--amber)} .s-Resolved{background:#E7F6EC;color:#087443}
+  .s-Closed{background:#F1F1F4;color:#475467} .s-Escalated{background:var(--red-bg);color:var(--red)} .s-OnHold{background:#F1F1F4;color:#475467}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--grey);padding:8px 10px;border-bottom:1px solid var(--line)}
+  td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tr.clk{cursor:pointer} tr.clk:hover td{background:var(--light2)}
+  .ref{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;font-weight:700;color:var(--green-dk)}
+  .banner{border-radius:10px;padding:14px 16px;margin:8px 0;font-size:14px}
+  .banner.ok{background:var(--light);border:1px solid #BFDCCF} .banner.warn{background:var(--amber-bg);border:1px solid #F0D9A8}
+  .banner.info{background:var(--blue-bg);border:1px solid #C7DBFA} .banner.err{background:var(--red-bg);border:1px solid #F3C4C0}
+  .codebox{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:22px;font-weight:800;letter-spacing:2px;background:#fff;border:2px dashed var(--green);border-radius:10px;padding:14px;text-align:center;color:var(--green-dk)}
+  .timeline{list-style:none;margin:0;padding:0}
+  .timeline li{position:relative;padding:0 0 16px 24px;border-left:2px solid var(--line);margin-left:6px}
+  .timeline li:last-child{border-left-color:transparent}
+  .timeline li::before{content:"";position:absolute;left:-7px;top:2px;width:12px;height:12px;border-radius:50%;background:var(--green);border:2px solid #fff}
+  .timeline .t{font-size:12px;color:var(--grey)} .timeline .e{font-weight:600;font-size:14px}
+  .kv{display:flex;gap:8px;font-size:14px;padding:5px 0} .kv .k{color:var(--grey);width:120px;flex-shrink:0}
+  .task{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:9px;margin-bottom:8px;font-size:14px}
+  .task .due{margin-left:auto;font-size:12px}
+  .divider{height:1px;background:var(--line);margin:18px 0}
+  .back{background:none;border:none;color:var(--green);font-weight:700;cursor:pointer;padding:0;margin-bottom:12px;font-size:14px}
+  .stat{flex:1;min-width:150px;background:var(--light2);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .stat .n{font-size:26px;font-weight:800;color:var(--green-dk)} .stat .l{font-size:12.5px;color:var(--grey);font-weight:600}
+  .msg{padding:10px 12px;border-radius:10px;margin-bottom:8px;font-size:14px;max-width:78%}
+  .msg.reporter{background:var(--light);align-self:flex-start} .msg.handler{background:var(--blue-bg);margin-left:auto}
+  .msgwrap{display:flex;flex-direction:column;gap:2px} .msg .who{font-size:11px;color:var(--grey);font-weight:700;margin-bottom:2px}
+  .chip{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--light);color:var(--green-dk)}
+  .note-sm{font-size:12.5px;color:var(--grey);margin-top:6px}
+  .warnbadge{background:var(--red-bg);color:var(--red);font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--green);border-radius:50%;animation:sp 0.7s linear infinite;vertical-align:middle}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .subj-result{padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-top:4px;cursor:pointer;font-size:13.5px}
+  .subj-result:hover{background:var(--light2)}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="logo">E</div>
+  <h1>Earthbar — HR Case Management</h1>
+  <span id="userbox" style="margin-left:auto"></span>
+</header>
+<nav id="nav"></nav>
+<main id="app"><div class="card"><span class="spin"></span> Loading…</div></main>
+
+<script src="./config.js"></script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
