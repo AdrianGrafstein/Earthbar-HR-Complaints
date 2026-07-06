@@ -3,7 +3,7 @@ name: Deploy web to GitHub Pages
 on:
   push:
     branches: [ main ]
-    paths: [ "web/**", ".github/workflows/deploy-pages.yml" ]
+    paths: [ "earthbar-hr/web/**", ".github/workflows/deploy-pages.yml" ]
   workflow_dispatch:
 
 permissions:
@@ -26,6 +26,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: ./web
+          path: ./earthbar-hr/web
       - id: deployment
         uses: actions/deploy-pages@v4
