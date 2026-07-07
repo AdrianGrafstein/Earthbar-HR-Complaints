@@ -17,7 +17,8 @@ const stlabel = s => SLABEL[s] || s;
 let session = null, me = null, isHandler = false, isAdmin = false;
 let dirList = [], dirMap = {};
 let view = "submit", selected = null, busy = false;
-let form = { mode:"named", category:CATEGORIES[0], subjectIds:[], subjQuery:"", description:"" };
+function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+let form = { mode:"named", category:CATEGORIES[0], subjectIds:[], subjQuery:"", description:"", incidentDate: todayStr() };
 let receipt = null, statusResult = null, errorMsg = "";
 
 const $ = id => document.getElementById(id);
@@ -28,7 +29,7 @@ const pill = s => `<span class="pill dot s-${s}">${stlabel(s)}</span>`;
 
 // expose handlers used from inline onclick
 Object.assign(window, { go, signInMicrosoft, signOut, setMode, submitForm, addSubject, rmSubject,
-  onSubjInput, openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply, setCategory });
+  onSubjInput, openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply, setCategory, setIncidentDate });
 
 // ---------------- AUTH / BOOTSTRAP ----------------
 async function boot(){
@@ -108,6 +109,8 @@ function renderSubmit(){
       : `<div class="banner ok" style="margin-top:10px">You're signed in (so we know you're Earthbar staff), but this report will carry <b>no identity</b>.</div>`}
     <label>Category</label>
     <select onchange="setCategory(this.value)">${CATEGORIES.map(c=>`<option ${form.category===c?'selected':''}>${c}</option>`).join("")}</select>
+    <label>When did this happen?</label>
+    <input type="date" max="${todayStr()}" value="${esc(form.incidentDate)}" onchange="setIncidentDate(this.value)">
     <label>Who is this about? <span class="muted" style="font-weight:400">(optional — drives conflict-of-interest routing)</span></label>
     <input id="subj" type="text" placeholder="Search a name or title…" value="${esc(form.subjQuery)}" oninput="onSubjInput(this.value)">
     ${results.map(d=>`<div class="subj-result" onclick="addSubject('${d.employee_id}')">${esc(d.name)} — <span class="muted">${esc(d.title||'')}${d.store?' · '+esc(d.store):''}</span></div>`).join("")}
@@ -121,6 +124,7 @@ function renderSubmit(){
 }
 function setMode(m){ form.mode=m; render(); }
 function setCategory(c){ form.category=c; }
+function setIncidentDate(v){ form.incidentDate = v || todayStr(); }
 function onSubjInput(v){ form.subjQuery=v; render(); const el=$("subj"); if(el){el.focus();el.setSelectionRange(v.length,v.length);} }
 function addSubject(id){ if(!form.subjectIds.includes(id)) form.subjectIds.push(id); form.subjQuery=""; render(); }
 function rmSubject(id){ form.subjectIds=form.subjectIds.filter(x=>x!==id); render(); }
@@ -131,11 +135,12 @@ async function submitForm(){
   busy=true; render();
   const { data, error } = await sb.rpc("submit_case", {
     p_category: form.category, p_description: form.description,
-    p_anonymous: form.mode==="anon", p_subject_ids: form.subjectIds });
+    p_anonymous: form.mode==="anon", p_subject_ids: form.subjectIds,
+    p_incident_date: form.incidentDate });
   busy=false;
   if(error){ errorMsg = "Could not submit: "+error.message; render(); return; }
   receipt = data;
-  form = { mode:"named", category:CATEGORIES[0], subjectIds:[], subjQuery:"", description:"" };
+  form = { mode:"named", category:CATEGORIES[0], subjectIds:[], subjQuery:"", description:"", incidentDate: todayStr() };
   render(); window.scrollTo({top:99999,behavior:"smooth"});
 }
 function renderReceipt(r){
@@ -210,6 +215,7 @@ async function renderCaseDetailInto(el, id){
     <div class="row">
       <div class="col">
         <div class="kv"><span class="k">Reporter</span>${c.anonymous?'<span class="chip">Anonymous — identity not stored</span>':`<b>${esc(c.reporter_email||'—')}</b>`}</div>
+        <div class="kv"><span class="k">Occurred</span><span>${c.incident_date?esc(c.incident_date):'—'}</span></div>
         <div class="kv"><span class="k">About</span><span>${(parties||[]).map(p=>esc(nameOf(p.subject_id))+' ('+esc(roleOf(p.subject_id))+')').join(", ")||'—'}</span></div>
         <div class="kv"><span class="k">Handler</span><b>${esc(handlerName)}</b>${c.external?' <span class="warnbadge">EXTERNAL</span>':''}</div>
         <div class="kv"><span class="k">Route reason</span><span>${esc((c.route_reason||'').replace(/_/g,' '))}</span></div>
