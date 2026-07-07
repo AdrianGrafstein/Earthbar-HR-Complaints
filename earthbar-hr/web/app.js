@@ -41,7 +41,6 @@ async function boot(){
 }
 async function loadContext(){
   const email = (session.user.email || "").toLowerCase();
-  // directory (RLS: any authenticated user may read)
   const { data: dir } = await sb.from("directory").select("employee_id,name,email,title,store,manager_id");
   dirList = dir || [];
   dirMap = Object.fromEntries(dirList.map(d => [d.employee_id, d]));
@@ -59,7 +58,7 @@ async function signOut(){ await sb.auth.signOut(); me=null; view="submit"; selec
 // ---------------- NAV ----------------
 function tabs(){
   const t = [{id:"submit",label:"Submit a report"},{id:"status",label:"Check my report status"}];
-  if (isHandler) t.splice(1,0,{id:"dashboard",label:"HR dashboard 🔒"});
+  if (isHandler) t.splice(1,0,{id:"dashboard",label:"HR Dashboard"});
   return t;
 }
 function go(v){ if (v==="dashboard" && !isHandler) v="submit"; view=v; selected=null; receipt=null; errorMsg=""; render(); }
@@ -71,9 +70,9 @@ function renderUserBox(){
   const el = $("userbox"); if (!el) return;
   if (!session){ el.innerHTML=""; return; }
   el.style.display="flex"; el.style.alignItems="center"; el.style.gap="12px";
-  el.innerHTML = `<span style="font-size:12px;text-align:right;line-height:1.2;color:#fff">${esc(me?.name||session.user.email)}<br>
-    <span style="opacity:.8">${esc(me?.title||"Employee")}</span></span>
-    <button onclick="signOut()" style="background:rgba(255,255,255,.16);color:#fff;border:none;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer">Sign out</button>`;
+  el.innerHTML = `<span style="font-size:12px;text-align:right;line-height:1.2;color:#111">${esc(me?.name||session.user.email)}<br>
+    <span style="color:#6b6b6b">${esc(me?.title||"Employee")}</span></span>
+    <button onclick="signOut()" style="background:#fff;color:#111;border:1px solid #111;padding:6px 12px;border-radius:2px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">Sign out</button>`;
 }
 
 // ---------------- LOGIN ----------------
@@ -114,7 +113,7 @@ function renderSubmit(){
     <label>Who is this about? <span class="muted" style="font-weight:400">(optional — drives conflict-of-interest routing)</span></label>
     <input id="subj" type="text" placeholder="Search a name or title…" value="${esc(form.subjQuery)}" oninput="onSubjInput(this.value)">
     ${results.map(d=>`<div class="subj-result" onclick="addSubject('${d.employee_id}')">${esc(d.name)} — <span class="muted">${esc(d.title||'')}${d.store?' · '+esc(d.store):''}</span></div>`).join("")}
-    <div style="margin-top:8px">${form.subjectIds.map(id=>`<span class="chip" style="margin-right:6px">${esc(nameOf(id))} <a onclick="rmSubject('${id}')" style="cursor:pointer;color:var(--red)">✕</a></span>`).join("") || '<span class="muted">No one added yet.</span>'}</div>
+    <div style="margin-top:8px">${form.subjectIds.map(id=>`<span class="chip" style="margin-right:6px">${esc(nameOf(id))} <a onclick="rmSubject('${id}')" style="cursor:pointer;color:var(--red);font-weight:700">×</a></span>`).join("") || '<span class="muted">No one added yet.</span>'}</div>
     <label>What happened?</label>
     <textarea id="desc" placeholder="Describe the situation. If anonymous, avoid details that would reveal who you are.">${esc(form.description)}</textarea>
     ${errorMsg?`<div class="banner err">${esc(errorMsg)}</div>`:""}
@@ -145,7 +144,7 @@ async function submitForm(){
 }
 function renderReceipt(r){
   return `<div class="card">
-    <div class="banner ok"><b>✓ Report received.</b> Reference <span class="ref">${esc(r.ref)}</span></div>
+    <div class="banner ok"><b>Report received.</b> Reference <span class="ref">${esc(r.ref)}</span></div>
     ${r.anonymous ? `<p class="muted">Save this claim code. It's the only way to check status or message HR — we store no identity.</p>
       <div class="codebox">${esc(r.claim_code)}</div>
       <p class="note-sm">Shown once. Check it any time under “Check my report status”.</p>`
@@ -178,7 +177,7 @@ async function renderDashboardInto(el){
         <div class="stat"><div class="n" style="color:${od?'var(--red)':'var(--green-dk)'}">${od}</div><div class="l">SLA overdue</div></div>
         <div class="stat"><div class="n">${ext}</div><div class="l">Escalated to external</div></div>
       </div>
-      <p class="note-sm">🔒 Cases naming you (or someone above you who is named) are hidden by the database and never sent to your browser.</p>
+      <p class="note-sm">Cases naming you (or someone above you who is named) are hidden by the database and never sent to your browser.</p>
     </div>
     <div class="card" style="padding:8px 0"><table>
       <thead><tr><th style="padding-left:20px">Ref</th><th>Category</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
@@ -207,7 +206,6 @@ async function renderCaseDetailInto(el, id){
   const handlerName = c.external ? "External advisor" : nameOf(c.handler_id);
   const nexts = NEXT[c.state] || [];
   const now = Date.now();
-  const evIcon = {created:"📥",routed:"🧭",task:"⏰",state:"🔄",reminder:"🔔",escalation:"⚠️",notify:"✉️"};
   el.innerHTML = `<button class="back" onclick="closeCase()">← Back to dashboard</button>
   <div class="card">
     <div style="display:flex;align-items:center;gap:10px"><span class="ref" style="font-size:16px">${esc(c.ref)}</span>${pill(c.state)}${c.severity==='High'?'<span class="warnbadge">High severity</span>':''}</div>
@@ -229,12 +227,12 @@ async function renderCaseDetailInto(el, id){
   <div class="row">
     <div class="col card"><b>Follow-up tasks &amp; SLAs</b><div style="margin-top:10px">
       ${(tasks||[]).length?tasks.map(t=>{const over=t.status==="open"&&t.due_at&&new Date(t.due_at).getTime()<now;
-        return `<div class="task"><span>${t.status==='done'?"✅":over?"🔴":"🟢"}</span>
+        return `<div class="task">
           <span style="${t.status==='done'?'text-decoration:line-through;color:var(--grey)':''}">${esc(t.title)}</span>
-          <span class="due" style="color:${over?'var(--red)':'var(--grey)'}">${t.status==='done'?'done':(over?'overdue':'due '+fmt(t.due_at))}</span></div>`;}).join(""):'<span class="muted">No tasks.</span>'}
+          <span class="due" style="color:${over?'var(--red)':'var(--grey)'}">${t.status==='done'?'Done':(over?'Overdue':'Due '+fmt(t.due_at))}</span></div>`;}).join(""):'<span class="muted">No tasks.</span>'}
     </div></div>
     <div class="col card"><b>Case timeline (audit log)</b><ul class="timeline" style="margin-top:10px">
-      ${(events||[]).map(e=>`<li><div class="t">${fmt(e.at)} · ${evIcon[e.type]||"•"} ${esc(e.type)}</div><div class="e">${esc(e.note)}</div></li>`).join("")}
+      ${(events||[]).map(e=>`<li><div class="t">${fmt(e.at)} · ${esc(e.type)}</div><div class="e">${esc(e.note)}</div></li>`).join("")}
     </ul></div>
   </div>
   <div class="card"><b>Messages ${c.anonymous?'<span class="chip">via claim code — reporter stays anonymous</span>':''}</b>
