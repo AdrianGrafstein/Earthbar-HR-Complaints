@@ -115,6 +115,19 @@
   .subj-result:hover{background:var(--wash)}
 
   #userbox{margin-left:auto;display:flex;align-items:center;gap:12px}
+  /* ---- v2 additions ---- */
+  .pill.r-Low{background:var(--wash);color:var(--ink);border:1px solid var(--line)}
+  .pill.r-Medium{background:#fff;color:var(--ink);border:1px solid var(--ink)}
+  .pill.r-High{background:var(--ink);color:#fff;border:1px solid var(--ink)}
+  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:14px}
+  .filters input[type=text]{flex:2;min-width:180px;width:auto}
+  .filters select{flex:1;min-width:120px;width:auto}
+  .radio-card.fork{padding:20px;font-size:15px}
+  .radio-card.fork:hover{border-color:var(--ink);background:var(--wash)}
+  .mini-l{display:block;font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+  input[type=file]{font-size:13px}
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:grid;place-items:center;z-index:50;padding:16px}
+  .modal{background:#fff;border-radius:var(--radius);border:1px solid var(--ink);padding:24px;max-width:520px;width:100%}
 </style>
 </head>
 <body>
