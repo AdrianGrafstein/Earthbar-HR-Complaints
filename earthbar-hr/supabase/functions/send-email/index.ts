@@ -1,9 +1,9 @@
 // send-email — drains notifications_outbox via Microsoft Graph.
-// DEPLOYED 2026-07-14 (verify_jwt=false). Called by pg_net triggers + a pg_cron
-// sweep; safe because it takes no payload and only sends already-queued mail.
+// DEPLOYED 2026-07-14 v9 (verify_jwt=false). Called by pg_net triggers + a
+// pg_cron sweep; safe because it takes no payload and only sends already-queued mail.
 // Secrets required: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET.
-// Optional: MAIL_FROM_CASES (default HRCaseManagement@earthbar.com),
-//           MAIL_FROM_RELAY (default HR@earthbar.com).
+// Sender addresses come from app_config keys mail_from_cases / mail_from_relay
+// (change with SQL, no redeploy needed). Currently both = hrcomplaints@earthbar.com.
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const json = (o: unknown, s = 200) =>
@@ -32,6 +32,13 @@ Deno.serve(async (_req) => {
     return json({ sent: 0, pending: rows.length, note: "Azure secrets not configured — emails stay queued" });
   }
 
+  const { data: cfgRows } = await supa.from("app_config").select("key,value")
+    .in("key", ["mail_from_cases", "mail_from_relay"]);
+  const cfg = Object.fromEntries((cfgRows ?? []).map((r) => [r.key, r.value]));
+  const fromCases = cfg.mail_from_cases;
+  const fromRelay = cfg.mail_from_relay ?? fromCases;
+  if (!fromCases) return json({ sent: 0, pending: rows.length, note: "mail_from_cases not set in app_config" });
+
   const tokResp = await fetch(`https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -47,9 +54,7 @@ Deno.serve(async (_req) => {
 
   let sent = 0;
   for (const r of rows) {
-    const from = r.template === "relay"
-      ? (Deno.env.get("MAIL_FROM_RELAY") ?? "HR@earthbar.com")
-      : (Deno.env.get("MAIL_FROM_CASES") ?? "HRCaseManagement@earthbar.com");
+    const from = r.template === "relay" ? fromRelay : fromCases;
     try {
       const resp = await fetch(
         `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(from)}/sendMail`,
@@ -77,7 +82,7 @@ Deno.serve(async (_req) => {
           .update({
             status: r.attempts + 1 >= 5 ? "error" : "pending",
             attempts: r.attempts + 1,
-            last_error: `${resp.status}: ${t.slice(0, 500)}`,
+            last_error: `from=${from} ${resp.status}: ${t.slice(0, 450)}`,
           })
           .eq("id", r.id);
       }
