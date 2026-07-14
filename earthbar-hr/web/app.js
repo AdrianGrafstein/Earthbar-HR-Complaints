@@ -355,8 +355,11 @@ function renderReceipt(r){
 function setFilter(k,v){ filters[k]=v; }
 function applyFilters(){ render(); }
 async function renderDashboardInto(el){
+  // NOTE: no select("*") on cases — reporter_email/phone are column-locked
+  // server-side (anonymity guarantee); requesting them is permission-denied.
+  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at";
   const { data:cases, error } = await sb.from("cases")
-    .select("*, tasks(status,due_at)")
+    .select(CASE_COLS + ", tasks(status,due_at)")
     .order("created_at",{ascending:false});
   if(error){ el.innerHTML = `<div class="card"><div class="banner err">Could not load cases: ${esc(error.message)}</div></div>`; return; }
   const now = Date.now();
@@ -399,7 +402,7 @@ async function renderDashboardInto(el){
         <td>${riskPill(caseRisk(c))}</td>
         <td>${esc(c.category)}</td>
         <td>${esc(c.location||'—')}</td>
-        <td>${c.anonymous?'<span class="chip">Anonymous</span>':esc(c.reporter_email||'Named')}</td>
+        <td>${c.anonymous?'<span class="chip">Anonymous</span>':esc(c.reporter_display||'Named')}</td>
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
         <td>${overdue(c)?'<span class="pill dot s-Escalated">Overdue</span>':'<span class="pill dot s-Resolved">On track</span>'}</td>
@@ -450,8 +453,9 @@ async function submitManual(){
 
 // ---- case detail ----
 async function renderCaseDetailInto(el, id){
+  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at";
   const [{data:c}, {data:parties}, {data:events}, {data:tasks}, {data:messages}] = await Promise.all([
-    sb.from("cases").select("*").eq("id",id).maybeSingle(),
+    sb.from("cases").select(CASE_COLS).eq("id",id).maybeSingle(),
     sb.from("case_parties").select("*").eq("case_id",id),
     sb.from("case_events").select("*").eq("case_id",id).order("at",{ascending:true}),
     sb.from("tasks").select("*").eq("case_id",id).order("created_at",{ascending:true}),
@@ -476,7 +480,7 @@ async function renderCaseDetailInto(el, id){
     <h2 class="section" style="margin-top:6px">${esc(c.category)}</h2>
     <div class="row">
       <div class="col">
-        <div class="kv"><span class="k">Reporter</span>${c.anonymous?'<span class="chip">Anonymous — contact info hidden, system emails them updates</span>':`<b>${esc(c.reporter_email||'—')}</b>`}</div>
+        <div class="kv"><span class="k">Reporter</span>${c.anonymous?'<span class="chip">Anonymous — contact info hidden, system emails them updates</span>':`<b>${esc(c.reporter_display||'—')}</b>`}</div>
         <div class="kv"><span class="k">Location</span><span>${esc(c.location||'—')}</span></div>
         <div class="kv"><span class="k">Occurred</span><span>${c.incident_date?esc(c.incident_date):'—'}</span></div>
         <div class="kv"><span class="k">Relationship</span><span>${esc(c.reporter_relationship||'—')}${c.reporter_role?' · '+esc(c.reporter_role):''}</span></div>
@@ -516,7 +520,7 @@ async function renderCaseDetailInto(el, id){
     ${(events||[]).map(e=>`<li><div class="t">${fmt(e.at)} · ${esc(e.type)}</div><div class="e">${esc(e.note)}</div></li>`).join("")}
   </ul></div>
   <div class="card"><b>Messages ${c.anonymous?'<span class="chip">relayed — reporter stays anonymous</span>':''}</b>
-    <div class="msgwrap" style="margin:12px 0">${(messages||[]).length?messages.map(m=>`<div class="msg ${m.sender_type}"><div class="who">${m.sender_type==='handler'?esc(handlerName):(c.anonymous?'Anonymous reporter':esc(c.reporter_email||'Reporter'))}</div>${esc(m.body)}</div>`).join(""):'<span class="muted">No messages yet.</span>'}</div>
+    <div class="msgwrap" style="margin:12px 0">${(messages||[]).length?messages.map(m=>`<div class="msg ${m.sender_type}"><div class="who">${m.sender_type==='handler'?esc(handlerName):(c.anonymous?'Anonymous reporter':esc(c.reporter_display||'Reporter'))}</div>${esc(m.body)}</div>`).join(""):'<span class="muted">No messages yet.</span>'}</div>
     <p class="note-sm">Messages are also emailed to the reporter automatically${c.anonymous?" — without revealing their address to you":""}.</p>
     <div style="display:flex;gap:8px"><input id="hmsg" type="text" placeholder="Message the reporter…"><button class="btn" onclick="sendHandlerMsg('${c.id}')">Send</button></div>
   </div>
