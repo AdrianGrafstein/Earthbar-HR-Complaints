@@ -161,11 +161,11 @@ function renderLogin(){
       <input id="otp-email" type="text" placeholder="you@example.com" value="${esc(auth.email)}">
       <div style="margin-top:14px"><button class="btn" onclick="sendOtp()" ${busy?'disabled':''}>${busy?'<span class="spin"></span> Sending…':'Email me a sign-in code'}</button></div>`
     : `
-      <div class="banner ok">Code sent to <b>${esc(auth.email)}</b>. Enter it below (check spam if you don't see it).</div>
-      <label>One-time code</label>
-      <input id="otp-code" type="text" placeholder="6-digit code" autocomplete="one-time-code">
+      <div class="banner ok">Email sent to <b>${esc(auth.email)}</b>. <b>Open the sign-in link in that email on this device</b> — you'll land back here signed in. (Check spam if you don't see it.)</div>
+      <label>Got a code instead? Enter it here</label>
+      <input id="otp-code" type="text" placeholder="6-digit code (if your email shows one)" autocomplete="one-time-code">
       <div style="margin-top:14px;display:flex;gap:8px">
-        <button class="btn" onclick="verifyOtp()" ${busy?'disabled':''}>${busy?'<span class="spin"></span> Checking…':'Sign in'}</button>
+        <button class="btn" onclick="verifyOtp()" ${busy?'disabled':''}>${busy?'<span class="spin"></span> Checking…':'Sign in with code'}</button>
         <button class="btn ghost" onclick="(function(){window.dispatchEvent(new Event('otp-reset'))})()" id="otp-back">Use a different email</button>
       </div>`}
     ${auth.err?`<div class="banner err">${esc(auth.err)}</div>`:""}
