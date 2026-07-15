@@ -69,7 +69,10 @@ Reporter replies stay in the portal (claim code); HR never sees the email addres
 ## Dashboard
 
 Filter + search by risk level, date, category, case status, etc.
-Access: Lindsey, Vicky, Ernie, Flora, Adrian, Eitan only.
+Access (revised 2026-07-15): **Lindsey, Vicky, Ernie, Flora ONLY** — flat, no
+hierarchy. All four can see and handle every case except ones they're conflicted
+on. Lindsey is the default auto-assignee (rank = fallback order only). Adrian and
+Eitan have NO case access (re-add via access_overrides for testing if needed).
 
 ## Cloud infrastructure plan (the new server-side layer)
 
