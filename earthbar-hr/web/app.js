@@ -49,6 +49,7 @@ let form = blankIncident();
 let qform = { location:"", body:"", email:"" };
 let receipt = null, statusResult = null, myReports = [];
 let filters = { q:"", risk:"", cat:"", state:"" };
+let showFilters = false;
 let showManual = false, manual = blankIncident(true);
 let closeModal = { open:false, caseId:null, sub:null, note:"" };
 let lookup = { query:"", picked:null, result:null, err:"" };
@@ -76,7 +77,7 @@ const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.
 Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
   setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitQuestion,
   openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply,
-  setFilter, applyFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
+  setFilter, applyFilters, toggleFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
   openCloseModal, cancelCloseModal, setCloseSub, confirmClose,
   saveRisk, savePolicies, uploadCaseEvidence,
   onLookupInput, pickLookup, backToLookup });
@@ -235,7 +236,7 @@ function partyBuilder(f, pre){
       (d.name||"").toLowerCase().includes(f.pQuery.toLowerCase()) ||
       (d.title||"").toLowerCase().includes(f.pQuery.toLowerCase())).slice(0,8) : [];
   return `
-    <label>Who was involved? <span class="muted" style="font-weight:400">(employees drive conflict-of-interest routing)</span></label>
+    <label>Who was involved?</label>
     <div class="row" style="align-items:flex-end">
       <div class="col" style="min-width:130px"><span class="mini-l">They are a…</span>
         <select onchange="${P.set}('pType',this.value)"><option value="employee" ${f.pType==='employee'?'selected':''}>Earthbar employee</option><option value="customer" ${f.pType==='customer'?'selected':''}>Customer</option></select></div>
@@ -289,8 +290,9 @@ function renderIncident(){
     <p class="note-sm" style="margin:0 0 6px">If you have any relevant documents for this case, please submit them — photos, screenshots, PDFs.</p>
     <input id="f-files" type="file" multiple>
 
-    <label>Your email <span class="muted" style="font-weight:400">(required — for your case confirmation and updates${form.anonymous?', never shown to HR':''})</span></label>
+    <label>Your email <span class="muted" style="font-weight:400">(required — for your case confirmation and updates)</span></label>
     <input id="f-email" type="text" value="${esc(form.email)}">
+    <p class="note-sm">Nobody sees this address — it goes only to the automated inbox that sends your confirmation and case updates.</p>
     <label>Your phone <span class="muted" style="font-weight:400">(optional)</span></label>
     <input id="f-phone" type="text" value="${esc(form.phone)}">
 
@@ -354,6 +356,7 @@ function renderReceipt(r){
 // ---------------- DASHBOARD ----------------
 function setFilter(k,v){ filters[k]=v; }
 function applyFilters(){ render(); }
+function toggleFilters(){ showFilters=!showFilters; render(); }
 async function renderDashboardInto(el){
   // NOTE: no select("*") on cases — reporter_email/phone are column-locked
   // server-side (anonymity guarantee); requesting them is permission-denied.
@@ -376,28 +379,29 @@ async function renderDashboardInto(el){
   const od = cases.filter(overdue).length;
   const states = [...new Set(cases.map(c=>c.state))];
   el.innerHTML = `<div class="card">
-      <h2 class="section">HR case dashboard <span class="chip" style="vertical-align:middle">${esc(me?.title||'Handler')}</span></h2>
-      <p class="muted">${isAdmin?"You have HR-leadership access: all cases except any you're personally involved in.":"You see cases assigned to you, and none you're involved in."}</p>
-      <div class="row" style="margin:14px 0 4px">
-        <div class="stat"><div class="n">${cases.length}</div><div class="l">Cases you can see</div></div>
+      <h2 class="section">HR case dashboard</h2>
+      <div class="row" style="margin:18px 0 4px">
         <div class="stat"><div class="n">${open}</div><div class="l">Open</div></div>
-        <div class="stat"><div class="n" style="color:${hi?'var(--red)':'var(--green-dk)'}">${hi}</div><div class="l">High risk</div></div>
-        <div class="stat"><div class="n" style="color:${od?'var(--red)':'var(--green-dk)'}">${od}</div><div class="l">SLA overdue</div></div>
+        <div class="stat"><div class="n" style="color:${hi?'#B42318':'#087443'}">${hi}</div><div class="l">High risk</div></div>
+        <div class="stat"><div class="n" style="color:${od?'#B42318':'#087443'}">${od}</div><div class="l">SLA overdue</div></div>
       </div>
-      <div class="filters">
+      <div class="rule"></div>
+      <div class="dash-actions">
+        <button class="btn sm ghost" onclick="toggleFilters()">${showFilters?'Hide filters':'Filters'}</button>
+        <button class="btn sm sec" style="margin-left:auto" onclick="toggleManual()">${showManual?'Cancel manual entry':'+ Add case manually'}</button>
+      </div>
+      ${showFilters?`<div class="filters">
         <input id="flt-q" type="text" placeholder="Search ref, description, location…" value="${esc(filters.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
         <select onchange="setFilter('risk',this.value);applyFilters()"><option value="">Risk: all</option>${RISKS.map(r=>`<option ${filters.risk===r?'selected':''}>${r}</option>`).join("")}</select>
         <select onchange="setFilter('cat',this.value);applyFilters()"><option value="">Category: all</option>${[...new Set(cases.map(c=>c.category))].map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join("")}</select>
         <select onchange="setFilter('state',this.value);applyFilters()"><option value="">Status: all</option>${states.map(s=>`<option value="${s}" ${filters.state===s?'selected':''}>${stlabel(s)}</option>`).join("")}</select>
-        <button class="btn sm" onclick="applyFilters()">Filter</button>
-        <button class="btn sm sec" style="margin-left:auto" onclick="toggleManual()">${showManual?'✕ Cancel manual entry':'+ Add case manually'}</button>
-      </div>
-      <p class="note-sm">Cases naming you (or someone above you who is named) are hidden by the database and never sent to your browser. Anonymous reporters' contact info is never visible here.</p>
+        <button class="btn sm" onclick="applyFilters()">Apply</button>
+      </div>`:""}
     </div>
     ${showManual?renderManual():""}
     <div class="card" style="padding:8px 0"><table>
       <thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Location</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
-      <tbody>${shown.length ? shown.map(c=>`<tr class="clk" onclick="openCase('${c.id}')">
+      <tbody>${shown.length ? shown.map(c=>`<tr class="clk ${overdue(c)?'overdue':''}" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${riskPill(caseRisk(c))}</td>
         <td>${esc(c.category)}</td>
@@ -405,7 +409,7 @@ async function renderDashboardInto(el){
         <td>${c.anonymous?'<span class="chip">Anonymous</span>':esc(c.reporter_display||'Named')}</td>
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
-        <td>${overdue(c)?'<span class="pill dot s-Escalated">Overdue</span>':'<span class="pill dot s-Resolved">On track</span>'}</td>
+        <td>${overdue(c)?'<span class="pill due-over">Overdue</span>':'<span class="pill due-ok">On track</span>'}</td>
       </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>
     </table></div>`;
 }
@@ -588,7 +592,7 @@ function renderLookup(){
       (d.name||"").toLowerCase().includes(lookup.query.toLowerCase())).slice(0,8) : [];
   return `<div class="card" style="max-width:760px;margin:0 auto">
     <h2 class="section">Employee mention lookup</h2>
-    <p class="muted">See how many times an employee has been mentioned across cases, and what their role was each time. Cases you're blocked from are excluded automatically.</p>
+    <p class="muted">See how many times an employee has been mentioned across cases, and what their role was each time.</p>
     ${lookup.picked ? `
       <div class="kv" style="margin-top:10px"><span class="k">Employee</span><b>${esc(nameOf(lookup.picked))}</b> <span class="muted">· ${esc(roleOf(lookup.picked))}</span>
         <button class="btn sm ghost" style="margin-left:10px" onclick="backToLookup()">change</button></div>
