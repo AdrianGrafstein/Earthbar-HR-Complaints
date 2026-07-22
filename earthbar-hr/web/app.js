@@ -30,6 +30,7 @@ const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
 // option — HR classifies internally after review. FINAL LIST STILL OPEN — placeholder:
 const CATEGORIES = ["Manager conduct","Coworker conduct","Workplace safety","Pay / hours dispute","Policy violation","Customer incident","Other"];
 const RELATIONSHIPS = ["Employee","Former employee","Customer","Vendor / partner","Other"];
+const REQUEST_TYPES = ["Accommodation — Religious","Accommodation — Medical","Accommodation — Other","Other request"];
 const RISKS = ["Low","Medium","High"];
 const PARTY_ROLES = ["subject","victim","witness"];
 const NEXT = {
@@ -46,9 +47,10 @@ let dirList = [], dirMap = {}, storeList = [];
 let view = "home", selected = null, busy = false, errorMsg = "";
 let auth = { email:"", sent:false, err:"" };
 let form = blankIncident();
-let qform = { location:"", body:"", email:"" };
+let qform = { location:"", body:"", email:"", rtype:REQUEST_TYPES[0] };
+let dashView = "cases";
 let receipt = null, statusResult = null, myReports = [];
-let filters = { q:"", risk:"", cat:"", state:"" };
+let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"" };
 let showFilters = false;
 let showManual = false, manual = blankIncident(true);
 let closeModal = { open:false, caseId:null, sub:null, note:"" };
@@ -75,7 +77,8 @@ const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.
   ? "This action needs the v2 backend, which isn't deployed yet." : (e?.message || "Unknown error");
 
 Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
-  setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitQuestion,
+  setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
+  setDashView, addNote,
   openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply,
   setFilter, applyFilters, toggleFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
   openCloseModal, cancelCloseModal, setCloseSub, confirmClose,
@@ -186,44 +189,47 @@ function renderHome(){
     <h2 class="section">How can HR help?</h2>
     <p class="muted">Choose one to get started.</p>
     <div class="radio-cards" style="margin-top:14px">
-      <div class="radio-card fork" onclick="go('question')"><b>I have a question or request</b>
-        <span class="muted">Benefits, policies, scheduling, documents — anything you'd normally email HR about.</span></div>
+      <div class="radio-card fork" onclick="go('request')"><b>I have a request</b>
+        <span class="muted">Accommodations (religious, medical) and other formal requests. For general questions, email Lindsey directly.</span></div>
       <div class="radio-card fork" onclick="go('incident')"><b>I want to report an incident</b>
         <span class="muted">Something happened that HR should look into. You can report anonymously.</span></div>
     </div>
   </div>`;
 }
 
-// ---------------- QUESTION / REQUEST ----------------
-function renderQuestion(){
+// ---------------- REQUEST ----------------
+function renderRequest(){
   return `<div class="card" style="max-width:720px;margin:0 auto">
     <button class="back" onclick="go('home')">← Back</button>
-    <h2 class="section">Ask HR a question or make a request</h2>
+    <h2 class="section">Make a request to HR</h2>
+    <label>What type of request is it?</label>
+    <select onchange="qformType(this.value)">${REQUEST_TYPES.map(t=>`<option ${qform.rtype===t?'selected':''}>${t}</option>`).join("")}</select>
     <label>Location (optional)</label>
     <select onchange="qformLoc(this.value)">${["",...storeList].map(s=>`<option value="${esc(s)}" ${qform.location===s?'selected':''}>${s||'— Not store-specific —'}</option>`).join("")}</select>
-    <label>Your question or request</label>
-    <textarea id="qbody" placeholder="What do you need?">${esc(qform.body)}</textarea>
+    <label>Your request</label>
+    <textarea id="qbody" placeholder="Describe what you're requesting.">${esc(qform.body)}</textarea>
     <label>Email for the reply</label>
     <input id="qemail" type="text" value="${esc(qform.email)}">
     ${errorMsg?`<div class="banner err">${esc(errorMsg)}</div>`:""}
-    <div style="margin-top:18px"><button class="btn" onclick="submitQuestion()" ${busy?'disabled':''}>${busy?'<span class="spin"></span> Sending…':'Send to HR'}</button></div>
+    <div style="margin-top:18px"><button class="btn" onclick="submitRequest()" ${busy?'disabled':''}>${busy?'<span class="spin"></span> Sending…':'Send request'}</button></div>
   </div>${receipt?renderReceipt(receipt):""}`;
 }
 window.qformLoc = v => { qform.location = v; };
-async function submitQuestion(){
+window.qformType = v => { qform.rtype = v; };
+async function submitRequest(){
   qform.body = $("qbody")?.value || ""; qform.email = ($("qemail")?.value||"").trim();
   errorMsg = "";
-  if(!qform.body.trim()){ errorMsg="Please enter your question."; render(); return; }
+  if(!qform.body.trim()){ errorMsg="Please describe your request."; render(); return; }
   if(!/^\S+@\S+\.\S+$/.test(qform.email)){ errorMsg="Please enter a valid email for the reply."; render(); return; }
   busy=true; render();
   const { data, error } = await sb.rpc("submit_case_v2", {
-    p_intake_type:"question", p_category:"Question / request", p_description:qform.body,
+    p_intake_type:"request", p_category:qform.rtype, p_description:qform.body,
     p_anonymous:false, p_location:qform.location||null, p_relationship:null, p_role:null,
     p_contact_email:qform.email, p_contact_phone:null, p_parties:[], p_manual:false, p_incident_date:null });
   busy=false;
   if(error){ errorMsg = errText(error); render(); return; }
   receipt = Object.assign({question:true}, data);
-  qform = { location:"", body:"", email:(session.user.email||"") };
+  qform = { location:"", body:"", email:(session.user.email||""), rtype:REQUEST_TYPES[0] };
   render(); window.scrollTo({top:99999,behavior:"smooth"});
 }
 
@@ -355,62 +361,95 @@ function renderReceipt(r){
 
 // ---------------- DASHBOARD ----------------
 function setFilter(k,v){ filters[k]=v; }
-function applyFilters(){ render(); }
+function applyFilters(){ filters.from = $("flt-from")?.value ?? filters.from; filters.to = $("flt-to")?.value ?? filters.to; render(); }
 function toggleFilters(){ showFilters=!showFilters; render(); }
+function setDashView(v){ dashView=v; showManual=false; filters={ q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"" }; render(); }
 async function renderDashboardInto(el){
   // NOTE: no select("*") on cases — reporter_email/phone are column-locked
   // server-side (anonymity guarantee); requesting them is permission-denied.
   const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at";
-  const { data:cases, error } = await sb.from("cases")
+  const { data:all, error } = await sb.from("cases")
     .select(CASE_COLS + ", tasks(status,due_at)")
     .order("created_at",{ascending:false});
   if(error){ el.innerHTML = `<div class="card"><div class="banner err">Could not load cases: ${esc(error.message)}</div></div>`; return; }
+  const isReq = dashView === "requests";
+  const pool = (all||[]).filter(c => isReq ? c.intake_type === "request" : c.intake_type !== "request");
   const now = Date.now();
   const overdue = c => (c.tasks||[]).some(t => t.status==="open" && t.due_at && new Date(t.due_at).getTime() < now);
   const q = ($("flt-q")?.value ?? filters.q).toLowerCase();
   filters.q = q;
-  const shown = cases.filter(c =>
-    (!filters.risk || caseRisk(c)===filters.risk) &&
+  const fromT = filters.from ? new Date(filters.from + "T00:00:00").getTime() : null;
+  const toT   = filters.to   ? new Date(filters.to   + "T23:59:59").getTime() : null;
+  const shown = pool.filter(c =>
+    (isReq || !filters.risk || caseRisk(c)===filters.risk) &&
     (!filters.cat  || c.category===filters.cat) &&
     (!filters.state|| c.state===filters.state) &&
+    (!filters.handler || (filters.handler==="__ext" ? c.external : c.handler_id===filters.handler)) &&
+    (!fromT || new Date(c.created_at).getTime() >= fromT) &&
+    (!toT   || new Date(c.created_at).getTime() <= toT) &&
     (!q || (c.ref||"").toLowerCase().includes(q) || (c.description||"").toLowerCase().includes(q) || (c.location||"").toLowerCase().includes(q)));
-  const open = cases.filter(c=>c.state!=="Closed").length;
-  const hi = cases.filter(c=>caseRisk(c)==="High").length;
-  const od = cases.filter(overdue).length;
-  const states = [...new Set(cases.map(c=>c.state))];
+  const open = pool.filter(c=>c.state!=="Closed").length;
+  const hi = pool.filter(c=>caseRisk(c)==="High").length;
+  const od = pool.filter(overdue).length;
+  const states = [...new Set(pool.map(c=>c.state))];
+  const handlers = [...new Map(pool.filter(c=>c.handler_id).map(c=>[c.handler_id, nameOf(c.handler_id)])).entries()];
+  const hasExt = pool.some(c=>c.external);
   el.innerHTML = `<div class="card">
-      <h2 class="section">HR case dashboard</h2>
+      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+        <h2 class="section" style="margin:0">HR dashboard</h2>
+        <div class="dash-toggle">
+          <button class="${!isReq?'on':''}" onclick="setDashView('cases')">Cases</button>
+          <button class="${isReq?'on':''}" onclick="setDashView('requests')">Requests</button>
+        </div>
+      </div>
       <div class="row" style="margin:18px 0 4px">
-        <div class="stat"><div class="n">${open}</div><div class="l">Open</div></div>
-        <div class="stat"><div class="n" style="color:${hi?'#B42318':'#087443'}">${hi}</div><div class="l">High risk</div></div>
-        <div class="stat"><div class="n" style="color:${od?'#B42318':'#087443'}">${od}</div><div class="l">SLA overdue</div></div>
+        <div class="stat"><div class="n">${open}</div><div class="l">Open ${isReq?'requests':'cases'}</div></div>
+        ${isReq
+          ? `<div class="stat"><div class="n">${pool.length}</div><div class="l">Total requests</div></div>`
+          : `<div class="stat"><div class="n" style="color:${hi?'#B42318':'#087443'}">${hi}</div><div class="l">High risk</div></div>
+             <div class="stat"><div class="n" style="color:${od?'#B7791F':'#087443'}">${od}</div><div class="l">SLA overdue</div></div>`}
       </div>
       <div class="rule"></div>
       <div class="dash-actions">
         <button class="btn sm ghost" onclick="toggleFilters()">${showFilters?'Hide filters':'Filters'}</button>
-        <button class="btn sm sec" style="margin-left:auto" onclick="toggleManual()">${showManual?'Cancel manual entry':'+ Add case manually'}</button>
+        ${!isReq?`<button class="btn sm sec" style="margin-left:auto" onclick="toggleManual()">${showManual?'Cancel manual entry':'+ Add case manually'}</button>`:""}
       </div>
       ${showFilters?`<div class="filters">
         <input id="flt-q" type="text" placeholder="Search ref, description, location…" value="${esc(filters.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
-        <select onchange="setFilter('risk',this.value);applyFilters()"><option value="">Risk: all</option>${RISKS.map(r=>`<option ${filters.risk===r?'selected':''}>${r}</option>`).join("")}</select>
-        <select onchange="setFilter('cat',this.value);applyFilters()"><option value="">Category: all</option>${[...new Set(cases.map(c=>c.category))].map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join("")}</select>
+        ${!isReq?`<select onchange="setFilter('risk',this.value);applyFilters()"><option value="">Risk: all</option>${RISKS.map(r=>`<option ${filters.risk===r?'selected':''}>${r}</option>`).join("")}</select>`:""}
+        <select onchange="setFilter('cat',this.value);applyFilters()"><option value="">${isReq?'Type':'Category'}: all</option>${[...new Set(pool.map(c=>c.category))].map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join("")}</select>
         <select onchange="setFilter('state',this.value);applyFilters()"><option value="">Status: all</option>${states.map(s=>`<option value="${s}" ${filters.state===s?'selected':''}>${stlabel(s)}</option>`).join("")}</select>
+        <select onchange="setFilter('handler',this.value);applyFilters()"><option value="">Handler: all</option>${handlers.map(([id,n])=>`<option value="${id}" ${filters.handler===id?'selected':''}>${esc(n)}</option>`).join("")}${hasExt?`<option value="__ext" ${filters.handler==='__ext'?'selected':''}>External advisor</option>`:""}</select>
+        <span class="mini-l" style="margin:0">Opened</span>
+        <input id="flt-from" type="date" value="${esc(filters.from||'')}" onchange="applyFilters()" style="flex:0 1 150px;width:auto">
+        <span class="muted">to</span>
+        <input id="flt-to" type="date" value="${esc(filters.to||'')}" onchange="applyFilters()" style="flex:0 1 150px;width:auto">
         <button class="btn sm" onclick="applyFilters()">Apply</button>
       </div>`:""}
     </div>
-    ${showManual?renderManual():""}
+    ${showManual&&!isReq?renderManual():""}
     <div class="card" style="padding:8px 0"><table>
-      <thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Location</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
+      ${isReq
+      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Reporter</th><th>Handler</th><th>State</th></tr></thead>
+      <tbody>${shown.length ? shown.map(c=>`<tr class="clk" onclick="openCase('${c.id}')">
+        <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
+        <td>${esc(c.category)}</td>
+        <td>${fmtD(c.created_at)}</td>
+        <td>${esc(c.reporter_display||'—')}</td>
+        <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
+        <td>${pill(c.state)}</td>
+      </tr>`).join("") : `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
+      : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk ${overdue(c)?'overdue':''}" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${riskPill(caseRisk(c))}</td>
         <td>${esc(c.category)}</td>
-        <td>${esc(c.location||'—')}</td>
+        <td>${fmtD(c.created_at)}</td>
         <td>${c.anonymous?'<span class="chip">Anonymous</span>':esc(c.reporter_display||'Named')}</td>
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
         <td>${overdue(c)?'<span class="pill due-over">Overdue</span>':'<span class="pill due-ok">On track</span>'}</td>
-      </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>
+      </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
     </table></div>`;
 }
 function openCase(id){ selected=id; evidence={list:[],err:""}; render(); window.scrollTo({top:0,behavior:"smooth"}); }
@@ -458,12 +497,13 @@ async function submitManual(){
 // ---- case detail ----
 async function renderCaseDetailInto(el, id){
   const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at";
-  const [{data:c}, {data:parties}, {data:events}, {data:tasks}, {data:messages}] = await Promise.all([
+  const [{data:c}, {data:parties}, {data:events}, {data:tasks}, {data:messages}, {data:notes}] = await Promise.all([
     sb.from("cases").select(CASE_COLS).eq("id",id).maybeSingle(),
     sb.from("case_parties").select("*").eq("case_id",id),
     sb.from("case_events").select("*").eq("case_id",id).order("at",{ascending:true}),
     sb.from("tasks").select("*").eq("case_id",id).order("created_at",{ascending:true}),
     sb.from("messages").select("*").eq("case_id",id).order("created_at",{ascending:true}),
+    sb.from("case_notes").select("*").eq("case_id",id).order("created_at",{ascending:true}),
   ]);
   if(!c){ el.innerHTML=`<button class="back" onclick="closeCase()">← Back</button><div class="card"><div class="banner warn">This case isn't available to you.</div></div>`; return; }
   // evidence list (bucket may not exist pre-v2 — degrade quietly)
@@ -520,6 +560,10 @@ async function renderCaseDetailInto(el, id){
           <span class="due" style="color:${over?'var(--red)':'var(--grey)'}">${t.status==='done'?'Done':(over?'Overdue':'Due '+fmt(t.due_at))}</span></div>`;}).join(""):'<span class="muted">No tasks.</span>'}
     </div></div>
   </div>
+  <div class="card"><b>HR notes</b> <span class="chip">internal — visible to the HR team only</span>
+    <div style="margin-top:12px">${(notes||[]).length?notes.map(n=>`<div class="hrnote"><div class="t">${esc(nameOf(dirList.find(d=>(d.email||'').toLowerCase()===(n.author_email||'').toLowerCase())?.employee_id)||n.author_email)} · ${fmt(n.created_at)}</div>${esc(n.body)}</div>`).join(""):'<span class="muted">No notes yet.</span>'}</div>
+    <div style="display:flex;gap:8px;margin-top:12px"><textarea id="hr-note" placeholder="Write your thoughts on this case…" style="min-height:60px;flex:1"></textarea><button class="btn sec" onclick="addNote('${c.id}')" style="align-self:flex-end">Add note</button></div>
+  </div>
   <div class="card"><b>Case timeline (audit log)</b><ul class="timeline" style="margin-top:10px">
     ${(events||[]).map(e=>`<li><div class="t">${fmt(e.at)} · ${esc(e.type)}</div><div class="e">${esc(e.note)}</div></li>`).join("")}
   </ul></div>
@@ -553,6 +597,12 @@ async function savePolicies(id){
   const v = $("pol")?.value ?? "";
   const { error } = await sb.rpc("set_policies",{ p_case_id:id, p_policies:v });
   if(error){ alert(errText(error)); return; } render();
+}
+async function addNote(id){
+  const v = $("hr-note")?.value.trim(); if(!v) return;
+  const { error } = await sb.rpc("add_case_note",{ p_case_id:id, p_body:v });
+  if(error){ alert(errText(error)); return; }
+  render();
 }
 async function doAdvance(id,to){ const {error}=await sb.rpc("advance_state",{p_case_id:id,p_to:to}); if(error)alert(errText(error)); render(); }
 async function sendHandlerMsg(id){ const v=$("hmsg")?.value.trim(); if(!v)return; const {error}=await sb.rpc("post_handler_message",{p_case_id:id,p_body:v}); if(error)alert(errText(error)); render(); }
@@ -660,6 +710,7 @@ async function sendReporterReply(){
 
 // ---------------- helpers / router ----------------
 function fmt(ts){ if(!ts) return ""; const d=new Date(ts); return d.toLocaleString(undefined,{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"}); }
+function fmtD(ts){ if(!ts) return "—"; const d=new Date(ts); return d.toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 
 function render(){
   renderUserBox(); renderNav();
@@ -668,7 +719,7 @@ function render(){
   if((view==="dashboard"||view==="lookup") && !isHandler) view="home";
   if(view==="home"){ el.innerHTML = renderHome(); }
   else if(view==="incident"){ el.innerHTML = renderIncident(); }
-  else if(view==="question"){ el.innerHTML = renderQuestion(); }
+  else if(view==="request"){ el.innerHTML = renderRequest(); }
   else if(view==="status"){ el.innerHTML = renderStatus(); loadMyReports().then(()=>{ if(view==="status"){ el.innerHTML = renderStatus(); } }); }
   else if(view==="lookup"){ el.innerHTML = renderLookup(); }
   else if(view==="dashboard"){
