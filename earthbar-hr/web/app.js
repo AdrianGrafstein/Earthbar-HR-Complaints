@@ -51,7 +51,7 @@ let qform = { location:"", body:"", email:"", rtype:REQUEST_TYPES[0] };
 let dashView = "cases";
 let receipt = null, statusResult = null, myReports = [];
 let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"" };
-let showFilters = false;
+let showFilters = false, showGuide = false;
 let showManual = false, manual = blankIncident(true);
 let closeModal = { open:false, caseId:null, sub:null, note:"" };
 let lookup = { query:"", picked:null, result:null, err:"" };
@@ -78,7 +78,7 @@ const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.
 
 Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
   setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
-  setDashView, addNote,
+  setDashView, addNote, toggleGuide,
   openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply,
   setFilter, applyFilters, toggleFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
   openCloseModal, cancelCloseModal, setCloseSub, confirmClose,
@@ -560,7 +560,9 @@ async function renderCaseDetailInto(el, id){
           <span class="due" style="color:${over?'var(--red)':'var(--grey)'}">${t.status==='done'?'Done':(over?'Overdue':'Due '+fmt(t.due_at))}</span></div>`;}).join(""):'<span class="muted">No tasks.</span>'}
     </div></div>
   </div>
-  <div class="card"><b>HR notes</b> <span class="chip">internal — visible to the HR team only</span>
+  <div class="card"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b>HR notes</b> <span class="chip">internal — visible to the HR team only</span>
+    <button class="btn sm ghost" style="margin-left:auto" onclick="toggleGuide()">${showGuide?'Hide interview guide':'Interview guide'}</button></div>
+    ${showGuide?interviewGuideHtml():""}
     <div style="margin-top:12px">${(notes||[]).length?notes.map(n=>{const w=dirList.find(d=>(d.email||'').toLowerCase()===(n.author_email||'').toLowerCase());return `<div class="hrnote"><div class="t">${esc(w?w.name:n.author_email)} · ${fmt(n.created_at)}</div>${esc(n.body)}</div>`;}).join(""):'<span class="muted">No notes yet.</span>'}</div>
     <div style="display:flex;gap:8px;margin-top:12px"><textarea id="hr-note" placeholder="Write your thoughts on this case…" style="min-height:60px;flex:1"></textarea><button class="btn sec" onclick="addNote('${c.id}')" style="align-self:flex-end">Add note</button></div>
   </div>
@@ -597,6 +599,30 @@ async function savePolicies(id){
   const v = $("pol")?.value ?? "";
   const { error } = await sb.rpc("set_policies",{ p_case_id:id, p_policies:v });
   if(error){ alert(errText(error)); return; } render();
+}
+function toggleGuide(){ showGuide=!showGuide; render(); }
+// From "Branded ER Statement Template" (Ernie Zavaleta, July 2026) — the interview
+// guide used when discussing a report on a call. Shown next to HR notes so the
+// handler knows what to capture.
+function interviewGuideHtml(){
+  return `<div class="guide">
+    <div class="g-sec"><span class="mini-l">Log these details in your notes</span>
+      Date &amp; time of the call · who you interviewed (name, title, store) · interview duration · remote or in person · the implicated person.</div>
+    <div class="g-sec"><span class="mini-l">Introduction — say to the interviewee</span>
+      <ul><li>Brief intro: your name, title, and role in the investigation.</li>
+      <li>Reason for the conversation — if they're implicated: "We're looking into a concern that was reported. We're not saying what was reported is true, but we need to ask for your account."</li></ul></div>
+    <div class="g-sec"><span class="mini-l">Explain the HR approach</span>
+      <ul><li>We don't assume the report is true — it's the starting point for the investigation.</li>
+      <li>Recommendations are based only on what we can substantiate (factual / provable).</li>
+      <li>Unable to substantiate or inconclusive ≠ we don't believe it could have happened.</li>
+      <li>Corrective actions are constrained to what we can prove or deduce.</li></ul></div>
+    <div class="g-sec"><span class="mini-l">Confidentiality — say to the interviewee</span>
+      No one who doesn't need access will see this statement. Key Support Center HR people or legal counsel may reference it if needed; beyond that we do our best to keep it confidential.</div>
+    <div class="g-sec"><span class="mini-l">Questions — record each response below</span>
+      <ul><li><b>Open with:</b> "How would you describe the overall working environment in your store/area?"</li>
+      <li><b>Then 5–6 specific questions about this case</b> — prepare them from the description and evidence before the call.</li>
+      <li><b>Always close with:</b> "Is there anything else that you feel is important for me to know, or that I should have asked you?"</li></ul></div>
+  </div>`;
 }
 async function addNote(id){
   const v = $("hr-note")?.value.trim(); if(!v) return;
