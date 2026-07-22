@@ -561,7 +561,7 @@ async function renderCaseDetailInto(el, id){
     </div></div>
   </div>
   <div class="card"><b>HR notes</b> <span class="chip">internal — visible to the HR team only</span>
-    <div style="margin-top:12px">${(notes||[]).length?notes.map(n=>`<div class="hrnote"><div class="t">${esc(nameOf(dirList.find(d=>(d.email||'').toLowerCase()===(n.author_email||'').toLowerCase())?.employee_id)||n.author_email)} · ${fmt(n.created_at)}</div>${esc(n.body)}</div>`).join(""):'<span class="muted">No notes yet.</span>'}</div>
+    <div style="margin-top:12px">${(notes||[]).length?notes.map(n=>{const w=dirList.find(d=>(d.email||'').toLowerCase()===(n.author_email||'').toLowerCase());return `<div class="hrnote"><div class="t">${esc(w?w.name:n.author_email)} · ${fmt(n.created_at)}</div>${esc(n.body)}</div>`;}).join(""):'<span class="muted">No notes yet.</span>'}</div>
     <div style="display:flex;gap:8px;margin-top:12px"><textarea id="hr-note" placeholder="Write your thoughts on this case…" style="min-height:60px;flex:1"></textarea><button class="btn sec" onclick="addNote('${c.id}')" style="align-self:flex-end">Add note</button></div>
   </div>
   <div class="card"><b>Case timeline (audit log)</b><ul class="timeline" style="margin-top:10px">
