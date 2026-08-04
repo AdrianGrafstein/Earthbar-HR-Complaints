@@ -69,7 +69,8 @@ let form = blankIncident();
 let qform = { location:"", body:"", email:"", rtype:REQUEST_TYPES[0] };
 let dashView = "cases";
 let receipt = null, statusResult = null, myReports = [];
-let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"", acc:"" };
+let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"", acc:"", dur:"" };
+let deleteModal = { open:false, caseId:null, ref:"", armed:false };
 let showFilters = false, showGuide = false, showReassign = false;
 let hrTeam = [];
 let showManual = false, manual = blankIncident(true);
@@ -101,6 +102,7 @@ const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.
 Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
   setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
   setDashView, addNote, toggleGuide, saveAccommodation, toggleReassign, doReassign, setCloseStatus,
+  askDelete, cancelDelete, armDelete, doDelete,
   openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply,
   setFilter, applyFilters, toggleFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
   openCloseModal, cancelCloseModal, setCloseSub, confirmClose,
@@ -211,7 +213,8 @@ window.addEventListener("otp-reset", ()=>{ auth={email:"",sent:false,err:""}; re
 
 // ---------------- HOME (question vs incident fork) ----------------
 function renderHome(){
-  return `<div class="card" style="max-width:720px;margin:24px auto">
+  return `${receipt?`<div style="max-width:720px;margin:24px auto 0">${renderReceipt(receipt)}</div>`:""}
+  <div class="card" style="max-width:720px;margin:24px auto">
     <h2 class="section">How can HR help?</h2>
     <p class="muted">Choose one to get started.</p>
     <div class="radio-cards" style="margin-top:14px">
@@ -256,7 +259,8 @@ async function submitRequest(){
   if(error){ errorMsg = errText(error); render(); return; }
   receipt = Object.assign({question:true}, data);
   qform = { location:"", body:"", email:(session.user.email||""), rtype:REQUEST_TYPES[0] };
-  render(); window.scrollTo({top:99999,behavior:"smooth"});
+  view = "home";   // land back on the home screen with the confirmation on top
+  render(); window.scrollTo({top:0,behavior:"smooth"});
 }
 
 // ---------------- INCIDENT INTAKE ----------------
@@ -368,7 +372,8 @@ async function submitIncident(){
   busy=false;
   receipt = Object.assign({upNote}, data);
   form = blankIncident(); form.email = (session.user.email||"");
-  render(); window.scrollTo({top:99999,behavior:"smooth"});
+  view = "home";   // land back on the home screen with the confirmation on top
+  render(); window.scrollTo({top:0,behavior:"smooth"});
 }
 function renderReceipt(r){
   if(r.question) return `<div class="card"><div class="banner ok"><b>Sent to HR.</b> Reference <span class="ref">${esc(r.ref)}</span> — you'll get a reply at the email you provided.</div></div>`;
@@ -389,7 +394,7 @@ function renderReceipt(r){
 function setFilter(k,v){ filters[k]=v; }
 function applyFilters(){ filters.from = $("flt-from")?.value ?? filters.from; filters.to = $("flt-to")?.value ?? filters.to; render(); }
 function toggleFilters(){ showFilters=!showFilters; render(); }
-function setDashView(v){ dashView=v; showManual=false; filters={ q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"" }; render(); }
+function setDashView(v){ dashView=v; showManual=false; filters={ q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"", acc:"", dur:"" }; render(); }
 async function renderDashboardInto(el){
   // NOTE: no select("*") on cases — reporter_email/phone are column-locked
   // server-side (anonymity guarantee); requesting them is permission-denied.
@@ -412,15 +417,19 @@ async function renderDashboardInto(el){
     (!filters.state|| c.state===filters.state) &&
     (!filters.handler || (filters.handler==="__ext" ? c.external : c.handler_id===filters.handler)) &&
     (!isReq || !filters.acc || (filters.acc==="__none" ? !c.accommodation_status : c.accommodation_status===filters.acc)) &&
+    (!isReq || !filters.dur || c.accommodation_duration===filters.dur) &&
     (!fromT || new Date(c.created_at).getTime() >= fromT) &&
     (!toT   || new Date(c.created_at).getTime() <= toT) &&
     (!q || (c.ref||"").toLowerCase().includes(q) || (c.description||"").toLowerCase().includes(q) || (c.location||"").toLowerCase().includes(q)));
   const open = pool.filter(c=>c.state!=="Closed").length;
   const hi = pool.filter(c=>caseRisk(c)==="High").length;
   const od = pool.filter(overdue).length;
-  const states = [...new Set(pool.map(c=>c.state))];
-  const handlers = [...new Map(pool.filter(c=>c.handler_id).map(c=>[c.handler_id, nameOf(c.handler_id)])).entries()];
-  const hasExt = pool.some(c=>c.external);
+  // Filter options come from FIXED lists (plus anything present in the data), so
+  // every category/state/team-member is offered even before any case uses it.
+  const catOpts = [...new Set([...(isReq?REQUEST_TYPES:CATEGORIES), ...pool.map(c=>c.category)])].filter(Boolean);
+  const stateOpts = isReq ? [...REQ_STATES,"Closed"]
+                          : [...new Set([...Object.keys(NEXT), ...pool.map(c=>c.state)])];
+  const handlers = hrTeam.map(t=>[t.employee_id, nameOf(t.employee_id)]);
   el.innerHTML = `<div class="card">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
         <h2 class="section" style="margin:0">HR dashboard</h2>
@@ -444,10 +453,11 @@ async function renderDashboardInto(el){
       ${showFilters?`<div class="filters">
         <input id="flt-q" type="text" placeholder="Search ref, description, location…" value="${esc(filters.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
         ${!isReq?`<select onchange="setFilter('risk',this.value);applyFilters()"><option value="">Risk: all</option>${RISKS.map(r=>`<option ${filters.risk===r?'selected':''}>${r}</option>`).join("")}</select>`:""}
-        <select onchange="setFilter('cat',this.value);applyFilters()"><option value="">${isReq?'Type':'Category'}: all</option>${[...new Set(pool.map(c=>c.category))].map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join("")}</select>
-        <select onchange="setFilter('state',this.value);applyFilters()"><option value="">${isReq?'State':'Status'}: all</option>${states.map(s=>`<option value="${s}" ${filters.state===s?'selected':''}>${stlabel(s)}</option>`).join("")}</select>
-        ${isReq?`<select onchange="setFilter('acc',this.value);applyFilters()"><option value="">Outcome: all</option>${ACC_STATUS.map(s=>`<option ${filters.acc===s?'selected':''}>${s}</option>`).join("")}<option value="__none" ${filters.acc==='__none'?'selected':''}>Not yet decided</option></select>`:""}
-        <select onchange="setFilter('handler',this.value);applyFilters()"><option value="">Handler: all</option>${handlers.map(([id,n])=>`<option value="${id}" ${filters.handler===id?'selected':''}>${esc(n)}</option>`).join("")}${hasExt?`<option value="__ext" ${filters.handler==='__ext'?'selected':''}>External advisor</option>`:""}</select>
+        <select onchange="setFilter('cat',this.value);applyFilters()"><option value="">${isReq?'Type':'Category'}: all</option>${catOpts.map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join("")}</select>
+        <select onchange="setFilter('state',this.value);applyFilters()"><option value="">${isReq?'State':'Status'}: all</option>${stateOpts.map(s=>`<option value="${s}" ${filters.state===s?'selected':''}>${stlabel(s)}</option>`).join("")}</select>
+        ${isReq?`<select onchange="setFilter('acc',this.value);applyFilters()"><option value="">Outcome: all</option>${ACC_STATUS.map(s=>`<option ${filters.acc===s?'selected':''}>${s}</option>`).join("")}<option value="__none" ${filters.acc==='__none'?'selected':''}>Not yet decided</option></select>
+        <select onchange="setFilter('dur',this.value);applyFilters()"><option value="">Duration: all</option>${ACC_DURATION.map(d=>`<option ${filters.dur===d?'selected':''}>${d}</option>`).join("")}</select>`:""}
+        <select onchange="setFilter('handler',this.value);applyFilters()"><option value="">${isReq?'Case owner':'Handler'}: all</option>${handlers.map(([id,n])=>`<option value="${id}" ${filters.handler===id?'selected':''}>${esc(n)}</option>`).join("")}<option value="__ext" ${filters.handler==='__ext'?'selected':''}>External advisor</option></select>
         <span class="mini-l" style="margin:0">Opened</span>
         <input id="flt-from" type="date" value="${esc(filters.from||'')}" onchange="applyFilters()" style="flex:0 1 150px;width:auto">
         <span class="muted">to</span>
@@ -458,7 +468,7 @@ async function renderDashboardInto(el){
     ${showManual&&!isReq?renderManual():""}
     <div class="card" style="padding:8px 0"><table>
       ${isReq
-      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Requester</th><th>Case owner</th><th>State</th><th>Outcome</th></tr></thead>
+      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Requester</th><th>Case owner</th><th>State</th><th>Outcome</th><th></th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${esc(c.category)}</td>
@@ -467,7 +477,8 @@ async function renderDashboardInto(el){
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
         <td>${accPill(c.accommodation_status)}</td>
-      </tr>`).join("") : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
+        <td><button class="btn sm ghost" onclick="event.stopPropagation();askDelete('${c.id}','${c.state}','${esc(c.ref)}')">Delete</button></td>
+      </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
       : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk ${overdue(c)?'overdue':''}" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
@@ -478,8 +489,36 @@ async function renderDashboardInto(el){
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
         <td>${overdue(c)?'<span class="pill due-over">Overdue</span>':'<span class="pill due-ok">On track</span>'}</td>
-      </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
-    </table></div>`;
+        <td><button class="btn sm ghost" onclick="event.stopPropagation();askDelete('${c.id}','${c.state}','${esc(c.ref)}')">Delete</button></td>
+      </tr>`).join("") : `<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
+    </table></div>
+    ${deleteModal.open?renderDeleteModal():""}`;
+}
+// ---- delete (closed cases only; two-step confirmation) ----
+function askDelete(id, state, ref){
+  if(state !== "Closed"){ alert("Cannot delete an open case"); return; }
+  deleteModal = { open:true, caseId:id, ref, armed:false };
+  render();
+}
+function cancelDelete(){ deleteModal = { open:false, caseId:null, ref:"", armed:false }; render(); }
+function armDelete(){ deleteModal.armed = true; render(); }
+async function doDelete(){
+  const { error } = await sb.rpc("delete_case", { p_case_id: deleteModal.caseId });
+  if(error){ alert(errText(error)); return; }
+  cancelDelete();
+}
+function renderDeleteModal(){
+  return `<div class="modal-overlay" onclick="if(event.target===this)cancelDelete()">
+    <div class="modal">
+      <h2 class="section" style="font-size:17px">Delete ${esc(deleteModal.ref)}?</h2>
+      <p class="muted">Are you sure you want to delete this closed case? Everything — notes, messages, evidence, and the audit log — is permanently removed. This cannot be undone.</p>
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;align-items:center">
+        <button class="btn ghost" onclick="cancelDelete()">Cancel</button>
+        ${deleteModal.armed
+          ? `<button class="btn" style="background:#B42318;color:#fff" onclick="doDelete()">Permanently delete</button>`
+          : `<button class="btn sec" onclick="armDelete()">Yes, I'm sure</button>`}
+      </div>
+    </div></div>`;
 }
 function openCase(id){ selected=id; evidence={list:[],err:""}; showReassign=false; showGuide=false; render(); window.scrollTo({top:0,behavior:"smooth"}); }
 function closeCase(){ selected=null; render(); }

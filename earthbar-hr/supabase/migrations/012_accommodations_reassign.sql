@@ -37,6 +37,10 @@ grant select on hr_team to authenticated;
 -- deactivates the old assignment row, moves open tasks to the new owner, writes
 -- a 'routed' audit event, and emails the new owner.
 
+-- delete_case(case) [migration 014, applied 2026-08-05] — handlers only, CLOSED
+-- cases only ("Cannot delete an open case"); permanently removes the case, all
+-- child rows, and its evidence storage entries.
+
 -- close_case is now intake-aware:
 --   incident -> requires substantiated true/false (unchanged)
 --   request  -> requires accommodation_status to be set first
