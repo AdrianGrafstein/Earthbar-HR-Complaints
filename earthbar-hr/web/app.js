@@ -717,7 +717,7 @@ async function sendHandlerMsg(id){ const v=$("hmsg")?.value.trim(); if(!v)return
 function openCloseModal(caseId, kind){ closeModal={open:true,caseId,kind:kind||"incident",sub:null,status:"",note:""}; render(); }
 function cancelCloseModal(){ closeModal={open:false,caseId:null,kind:"incident",sub:null,status:"",note:""}; render(); }
 function setCloseSub(v){ closeModal.sub=v; closeModal.note=$("close-note")?.value||""; render(); }
-function setCloseStatus(v){ closeModal.status=v; closeModal.note=$("close-note")?.value||""; }
+function setCloseStatus(v){ closeModal.status=v; closeModal.note=$("close-note")?.value||""; render(); }
 function renderCloseModal(){
   const isReq = closeModal.kind==="request";
   return `<div class="modal-overlay" onclick="if(event.target===this)cancelCloseModal()">
