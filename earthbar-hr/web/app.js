@@ -33,12 +33,31 @@ const RELATIONSHIPS = ["Employee","Former employee","Customer","Vendor / partner
 const REQUEST_TYPES = ["Accommodation — Religious","Accommodation — Medical","Accommodation — Other","Other request"];
 const RISKS = ["Low","Medium","High"];
 const PARTY_ROLES = ["subject","victim","witness"];
+// --- accommodation requests (Vicky, 2026-07-23) ---
+const ACC_STATUS = ["Approved","Approved with Alternative","Denied","Withdrawn"];
+// NOTE: the medical form offers Permanent/Temporary/Unknown; Vicky asked for these two.
+const ACC_DURATION = ["Temporary","Ongoing"];
+// Requests have their own lifecycle. Transitions are deliberately loose — a real
+// interactive process loops (waiting on a doctor's note → review → waiting again) —
+// and every move is written to the audit log regardless.
+const REQ_STATES = ["Assigned","UnderReview","AwaitingInformation","InInteractiveProcess","Monitoring"];
+// Per-intake-type wording. Labels only: the database columns keep their names.
+function L(c, key){
+  const r = c && c.intake_type === "request";
+  return ({ reporter: r?"Requester":"Reporter",
+            risk:     r?"Priority / time sensitivity":"Risk level",
+            riskCol:  r?"Priority":"Risk",
+            handler:  r?"Case owner":"Handler",
+            evidence: r?"Supporting Documents":"Evidence",
+            guide:    r?"Interactive Process Guide":"Interview guide" })[key];
+}
 const NEXT = {
   Submitted:["Triage"], Triage:["Assigned","Escalated"], Assigned:["UnderReview"],
   UnderReview:["Action","OnHold"], Action:["Resolved"], Resolved:["Closed","UnderReview"],
   OnHold:["UnderReview"], Escalated:["Assigned"], Closed:["UnderReview"],
 };
-const SLABEL = { UnderReview:"Under Review", OnHold:"On Hold" };
+const SLABEL = { UnderReview:"Under Review", OnHold:"On Hold",
+  AwaitingInformation:"Awaiting Information", InInteractiveProcess:"In Interactive Process" };
 const stlabel = s => SLABEL[s] || s;
 
 // ---- state ----
@@ -50,10 +69,11 @@ let form = blankIncident();
 let qform = { location:"", body:"", email:"", rtype:REQUEST_TYPES[0] };
 let dashView = "cases";
 let receipt = null, statusResult = null, myReports = [];
-let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"" };
-let showFilters = false, showGuide = false;
+let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"", acc:"" };
+let showFilters = false, showGuide = false, showReassign = false;
+let hrTeam = [];
 let showManual = false, manual = blankIncident(true);
-let closeModal = { open:false, caseId:null, sub:null, note:"" };
+let closeModal = { open:false, caseId:null, kind:"incident", sub:null, status:"", note:"" };
 let lookup = { query:"", picked:null, result:null, err:"" };
 let evidence = { list:[], err:"" };
 
@@ -71,6 +91,8 @@ const nameOf = id => dirMap[id]?.name || id || "—";
 const roleOf = id => dirMap[id]?.title || "";
 const pill = s => `<span class="pill dot s-${s}">${stlabel(s)}</span>`;
 const riskPill = r => r ? `<span class="pill r-${r}">${r}</span>` : '<span class="muted">—</span>';
+const accPill = s => !s ? '<span class="muted">pending</span>'
+  : `<span class="pill a-${s.split(' ')[0]}">${esc(s)}</span>`;
 const caseRisk = c => c.risk_level || (c.severity === "High" ? "High" : null);
 // Friendly message when a v2 RPC isn't deployed yet
 const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.test(e?.message||"")
@@ -78,7 +100,7 @@ const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.
 
 Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
   setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
-  setDashView, addNote, toggleGuide,
+  setDashView, addNote, toggleGuide, saveAccommodation, toggleReassign, doReassign, setCloseStatus,
   openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply,
   setFilter, applyFilters, toggleFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
   openCloseModal, cancelCloseModal, setCloseSub, confirmClose,
@@ -102,6 +124,10 @@ async function loadContext(){
   me = dirList.find(d => (d.email||"").toLowerCase() === email) || { name: session.user.user_metadata?.name || email, title:null, email };
   const [a, h] = await Promise.all([ sb.rpc("app_is_admin"), sb.rpc("app_is_handler") ]);
   isAdmin = !!a.data; isHandler = !!h.data;
+  if (isHandler) {
+    const { data: team } = await sb.from("hr_team").select("employee_id,rank").order("rank");
+    hrTeam = team || [];   // readable by handlers only (policy) — powers the reassign list
+  }
   form.email = form.email || email; qform.email = qform.email || email;
   if (view === "dashboard" && !isHandler) view = "home";
 }
@@ -367,7 +393,7 @@ function setDashView(v){ dashView=v; showManual=false; filters={ q:"", risk:"", 
 async function renderDashboardInto(el){
   // NOTE: no select("*") on cases — reporter_email/phone are column-locked
   // server-side (anonymity guarantee); requesting them is permission-denied.
-  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at";
+  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at,accommodation_status,accommodation_start,accommodation_end,accommodation_duration";
   const { data:all, error } = await sb.from("cases")
     .select(CASE_COLS + ", tasks(status,due_at)")
     .order("created_at",{ascending:false});
@@ -385,6 +411,7 @@ async function renderDashboardInto(el){
     (!filters.cat  || c.category===filters.cat) &&
     (!filters.state|| c.state===filters.state) &&
     (!filters.handler || (filters.handler==="__ext" ? c.external : c.handler_id===filters.handler)) &&
+    (!isReq || !filters.acc || (filters.acc==="__none" ? !c.accommodation_status : c.accommodation_status===filters.acc)) &&
     (!fromT || new Date(c.created_at).getTime() >= fromT) &&
     (!toT   || new Date(c.created_at).getTime() <= toT) &&
     (!q || (c.ref||"").toLowerCase().includes(q) || (c.description||"").toLowerCase().includes(q) || (c.location||"").toLowerCase().includes(q)));
@@ -418,7 +445,8 @@ async function renderDashboardInto(el){
         <input id="flt-q" type="text" placeholder="Search ref, description, location…" value="${esc(filters.q)}" onkeydown="if(event.key==='Enter')applyFilters()">
         ${!isReq?`<select onchange="setFilter('risk',this.value);applyFilters()"><option value="">Risk: all</option>${RISKS.map(r=>`<option ${filters.risk===r?'selected':''}>${r}</option>`).join("")}</select>`:""}
         <select onchange="setFilter('cat',this.value);applyFilters()"><option value="">${isReq?'Type':'Category'}: all</option>${[...new Set(pool.map(c=>c.category))].map(c=>`<option ${filters.cat===c?'selected':''}>${esc(c)}</option>`).join("")}</select>
-        <select onchange="setFilter('state',this.value);applyFilters()"><option value="">Status: all</option>${states.map(s=>`<option value="${s}" ${filters.state===s?'selected':''}>${stlabel(s)}</option>`).join("")}</select>
+        <select onchange="setFilter('state',this.value);applyFilters()"><option value="">${isReq?'State':'Status'}: all</option>${states.map(s=>`<option value="${s}" ${filters.state===s?'selected':''}>${stlabel(s)}</option>`).join("")}</select>
+        ${isReq?`<select onchange="setFilter('acc',this.value);applyFilters()"><option value="">Outcome: all</option>${ACC_STATUS.map(s=>`<option ${filters.acc===s?'selected':''}>${s}</option>`).join("")}<option value="__none" ${filters.acc==='__none'?'selected':''}>Not yet decided</option></select>`:""}
         <select onchange="setFilter('handler',this.value);applyFilters()"><option value="">Handler: all</option>${handlers.map(([id,n])=>`<option value="${id}" ${filters.handler===id?'selected':''}>${esc(n)}</option>`).join("")}${hasExt?`<option value="__ext" ${filters.handler==='__ext'?'selected':''}>External advisor</option>`:""}</select>
         <span class="mini-l" style="margin:0">Opened</span>
         <input id="flt-from" type="date" value="${esc(filters.from||'')}" onchange="applyFilters()" style="flex:0 1 150px;width:auto">
@@ -430,7 +458,7 @@ async function renderDashboardInto(el){
     ${showManual&&!isReq?renderManual():""}
     <div class="card" style="padding:8px 0"><table>
       ${isReq
-      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Reporter</th><th>Handler</th><th>State</th></tr></thead>
+      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Requester</th><th>Case owner</th><th>State</th><th>Outcome</th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${esc(c.category)}</td>
@@ -438,7 +466,8 @@ async function renderDashboardInto(el){
         <td>${esc(c.reporter_display||'—')}</td>
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
-      </tr>`).join("") : `<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
+        <td>${accPill(c.accommodation_status)}</td>
+      </tr>`).join("") : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
       : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk ${overdue(c)?'overdue':''}" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
@@ -452,7 +481,7 @@ async function renderDashboardInto(el){
       </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
     </table></div>`;
 }
-function openCase(id){ selected=id; evidence={list:[],err:""}; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+function openCase(id){ selected=id; evidence={list:[],err:""}; showReassign=false; showGuide=false; render(); window.scrollTo({top:0,behavior:"smooth"}); }
 function closeCase(){ selected=null; render(); }
 
 // ---- manual case entry (for reports that reach Lindsey by email first) ----
@@ -496,7 +525,7 @@ async function submitManual(){
 
 // ---- case detail ----
 async function renderCaseDetailInto(el, id){
-  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at";
+  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at,accommodation_status,accommodation_start,accommodation_end,accommodation_duration";
   const [{data:c}, {data:parties}, {data:events}, {data:tasks}, {data:messages}, {data:notes}] = await Promise.all([
     sb.from("cases").select(CASE_COLS).eq("id",id).maybeSingle(),
     sb.from("case_parties").select("*").eq("case_id",id),
@@ -512,44 +541,66 @@ async function renderCaseDetailInto(el, id){
     const ev=$("ev-list"); if(ev) ev.innerHTML = evidenceHtml(id);
   });
   const handlerName = c.external ? "External advisor" : nameOf(c.handler_id);
-  const nexts = (NEXT[c.state] || []).filter(n=>n!=="Closed");
-  const canClose = (NEXT[c.state]||[]).includes("Closed");
+  const isReq = c.intake_type === "request";
+  const nexts = isReq ? REQ_STATES.filter(s=>s!==c.state)
+                      : (NEXT[c.state] || []).filter(n=>n!=="Closed");
+  const canClose = isReq ? c.state!=="Closed" : (NEXT[c.state]||[]).includes("Closed");
   const now = Date.now();
   const partyLine = p => p.party_type==="customer" || (!p.subject_id && p.display_name)
       ? `${esc(p.display_name||"Customer")} (customer, ${esc(p.role_in_case)})`
       : `${esc(nameOf(p.subject_id))} (${esc(roleOf(p.subject_id))}${p.role_in_case&&p.role_in_case!=='subject'?', '+esc(p.role_in_case):''})`;
   el.innerHTML = `<button class="back" onclick="closeCase()">← Back to dashboard</button>
   <div class="card">
-    <div style="display:flex;align-items:center;gap:10px"><span class="ref" style="font-size:16px">${esc(c.ref)}</span>${pill(c.state)}${riskPill(caseRisk(c))}${c.substantiated===true?'<span class="chip">Substantiated</span>':c.substantiated===false?'<span class="chip" style="background:#F1F1F4;color:#475467">Unsubstantiated</span>':''}</div>
+    <div style="display:flex;align-items:center;gap:10px"><span class="ref" style="font-size:16px">${esc(c.ref)}</span>${pill(c.state)}${riskPill(caseRisk(c))}${isReq&&c.accommodation_status?accPill(c.accommodation_status):''}${!isReq&&c.substantiated===true?'<span class="chip">Substantiated</span>':!isReq&&c.substantiated===false?'<span class="chip" style="background:#F1F1F4;color:#475467">Unsubstantiated</span>':''}</div>
     <h2 class="section" style="margin-top:6px">${esc(c.category)}</h2>
     <div class="row">
       <div class="col">
-        <div class="kv"><span class="k">Reporter</span>${c.anonymous?'<span class="chip">Anonymous — contact info hidden, system emails them updates</span>':`<b>${esc(c.reporter_display||'—')}</b>`}</div>
+        <div class="kv"><span class="k">${L(c,'reporter')}</span>${c.anonymous?'<span class="chip">Anonymous — contact info hidden, system emails them updates</span>':`<b>${esc(c.reporter_display||'—')}</b>`}</div>
         <div class="kv"><span class="k">Location</span><span>${esc(c.location||'—')}</span></div>
-        <div class="kv"><span class="k">Occurred</span><span>${c.incident_date?esc(c.incident_date):'—'}</span></div>
+        ${!isReq?`<div class="kv"><span class="k">Occurred</span><span>${c.incident_date?esc(c.incident_date):'—'}</span></div>
         <div class="kv"><span class="k">Relationship</span><span>${esc(c.reporter_relationship||'—')}${c.reporter_role?' · '+esc(c.reporter_role):''}</span></div>
-        <div class="kv"><span class="k">Involved</span><span>${(parties||[]).map(partyLine).join(", ")||'—'}</span></div>
-        <div class="kv"><span class="k">Handler</span><b>${esc(handlerName)}</b>${c.external?' <span class="warnbadge">EXTERNAL</span>':''}</div>
+        <div class="kv"><span class="k">Involved</span><span>${(parties||[]).map(partyLine).join(", ")||'—'}</span></div>`:""}
+        <div class="kv"><span class="k">${L(c,'handler')}</span><b>${esc(handlerName)}</b>${c.external?' <span class="warnbadge">EXTERNAL</span>':''}
+          <button class="btn sm ghost" style="margin-left:8px" onclick="toggleReassign()">${showReassign?'Cancel':'Reassign'}</button></div>
+        ${showReassign?`<div class="reassign">
+          <select id="ra-to">${hrTeam.filter(t=>t.employee_id!==c.handler_id).map(t=>`<option value="${t.employee_id}">${esc(nameOf(t.employee_id))}</option>`).join("")}</select>
+          <input id="ra-why" type="text" placeholder="Reason (optional)">
+          <button class="btn sm" onclick="doReassign('${c.id}')">Confirm reassignment</button>
+        </div>`:""}
         <div class="kv"><span class="k">Route reason</span><span>${esc((c.route_reason||'').replace(/_/g,' '))}</span></div>
-        <div class="kv"><span class="k">Risk level</span><span>
+        <div class="kv"><span class="k">${L(c,'risk')}</span><span>
           <select id="risk-sel" style="width:auto;padding:5px 8px">${["",...RISKS].map(r=>`<option value="${r}" ${caseRisk(c)===r?'selected':''}>${r||'— unset —'}</option>`).join("")}</select>
           <button class="btn sm sec" onclick="saveRisk('${c.id}')">Save</button></span></div>
       </div>
       <div class="col"><div class="kv"><span class="k">Description</span></div><div class="banner" style="background:#fff;border:1px solid var(--line)">${esc(c.description)}</div>
         ${c.ai_summary?`<div class="kv" style="margin-top:8px"><span class="k">AI review</span></div><div class="banner info">${esc(c.ai_summary)}</div>`:""}</div>
     </div>
-    <label>Realms &amp; policies in question</label>
-    <div style="display:flex;gap:8px"><input id="pol" type="text" placeholder="e.g. Anti-harassment policy §3; Timekeeping policy" value="${esc(c.policies||'')}"><button class="btn sm sec" onclick="savePolicies('${c.id}')">Save</button></div>
+    ${!isReq?`<label>Realms &amp; policies in question</label>
+    <div style="display:flex;gap:8px"><input id="pol" type="text" placeholder="e.g. Anti-harassment policy §3; Timekeeping policy" value="${esc(c.policies||'')}"><button class="btn sm sec" onclick="savePolicies('${c.id}')">Save</button></div>`:""}
     <div class="divider"></div>
-    <b style="font-size:13px">Advance case state</b>
+    <b style="font-size:13px">${isReq?'Move this request to':'Advance case state'}</b>
     <div style="margin-top:8px">
-      ${nexts.map(n=>`<button class="btn sm sec" style="margin-right:8px" onclick="doAdvance('${c.id}','${n}')">→ ${stlabel(n)}</button>`).join("")}
-      ${canClose?`<button class="btn sm" style="background:var(--red)" onclick="openCloseModal('${c.id}')">Close case…</button>`:""}
+      ${nexts.map(n=>`<button class="btn sm sec" style="margin-right:8px;margin-bottom:6px" onclick="doAdvance('${c.id}','${n}')">→ ${stlabel(n)}</button>`).join("")}
+      ${canClose?`<button class="btn sm" style="background:var(--red)" onclick="openCloseModal('${c.id}','${isReq?'request':'incident'}')">${isReq?'Close request…':'Close case…'}</button>`:""}
       ${!nexts.length&&!canClose?'<span class="muted">Case is closed.</span>':""}
     </div>
   </div>
+  ${isReq?`<div class="card">
+    <b>Accommodation</b> <span class="chip">for reporting</span>
+    <div class="row" style="margin-top:14px">
+      <div class="col" style="min-width:210px"><span class="mini-l">Outcome / status</span>
+        <select id="acc-status">${["",...ACC_STATUS].map(s=>`<option value="${esc(s)}" ${c.accommodation_status===s?'selected':''}>${s||'— not yet decided —'}</option>`).join("")}</select></div>
+      <div class="col" style="min-width:150px"><span class="mini-l">Duration</span>
+        <select id="acc-dur">${["",...ACC_DURATION].map(s=>`<option value="${esc(s)}" ${c.accommodation_duration===s?'selected':''}>${s||'— unset —'}</option>`).join("")}</select></div>
+      <div class="col" style="min-width:150px"><span class="mini-l">Start date</span>
+        <input id="acc-start" type="date" value="${esc(c.accommodation_start||'')}"></div>
+      <div class="col" style="min-width:150px"><span class="mini-l">End date</span>
+        <input id="acc-end" type="date" value="${esc(c.accommodation_end||'')}"></div>
+    </div>
+    <div style="margin-top:14px"><button class="btn sm" onclick="saveAccommodation('${c.id}')">Save accommodation details</button></div>
+  </div>`:""}
   <div class="row">
-    <div class="col card"><b>Evidence</b>
+    <div class="col card"><b>${L(c,'evidence')}</b>
       <div id="ev-list" style="margin-top:10px">${evidenceHtml(id)}</div>
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center"><input id="ev-file" type="file" multiple style="flex:1"><button class="btn sm sec" onclick="uploadCaseEvidence('${c.id}')">Upload</button></div>
     </div>
@@ -561,8 +612,8 @@ async function renderCaseDetailInto(el, id){
     </div></div>
   </div>
   <div class="card"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b>HR notes</b> <span class="chip">internal — visible to the HR team only</span>
-    <button class="btn sm ghost" style="margin-left:auto" onclick="toggleGuide()">${showGuide?'Hide interview guide':'Interview guide'}</button></div>
-    ${showGuide?interviewGuideHtml():""}
+    <button class="btn sm ghost" style="margin-left:auto" onclick="toggleGuide()">${showGuide?'Hide guide':L(c,'guide')}</button></div>
+    ${showGuide?(isReq?processGuideHtml():interviewGuideHtml()):""}
     <div style="margin-top:12px">${(notes||[]).length?notes.map(n=>{const w=dirList.find(d=>(d.email||'').toLowerCase()===(n.author_email||'').toLowerCase());return `<div class="hrnote"><div class="t">${esc(w?w.name:n.author_email)} · ${fmt(n.created_at)}</div>${esc(n.body)}</div>`;}).join(""):'<span class="muted">No notes yet.</span>'}</div>
     <div style="display:flex;gap:8px;margin-top:12px"><textarea id="hr-note" placeholder="Write your thoughts on this case…" style="min-height:60px;flex:1"></textarea><button class="btn sec" onclick="addNote('${c.id}')" style="align-self:flex-end">Add note</button></div>
   </div>
@@ -601,6 +652,35 @@ async function savePolicies(id){
   if(error){ alert(errText(error)); return; } render();
 }
 function toggleGuide(){ showGuide=!showGuide; render(); }
+// Placeholder until Vicky supplies the Interactive Process Guide text.
+function processGuideHtml(){
+  return `<div class="guide">
+    <div class="g-sec"><span class="mini-l">Interactive Process Guide</span>
+      Vicky is writing this content — once she sends it, it drops in here the same way the
+      interview guide works on incident cases.</div>
+    <div class="g-sec"><span class="mini-l">In the meantime, log these in your notes</span>
+      Date of each contact · who you spoke with · what was requested · what information or
+      documentation is still outstanding · options discussed · the decision and why.</div>
+  </div>`;
+}
+async function saveAccommodation(id){
+  const { error } = await sb.rpc("set_accommodation", {
+    p_case_id:id,
+    p_status:   $("acc-status")?.value || null,
+    p_start:    $("acc-start")?.value  || null,
+    p_end:      $("acc-end")?.value    || null,
+    p_duration: $("acc-dur")?.value    || null });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+function toggleReassign(){ showReassign=!showReassign; render(); }
+async function doReassign(id){
+  const to = $("ra-to")?.value; if(!to) return;
+  const why = $("ra-why")?.value || "";
+  const { error } = await sb.rpc("reassign_case",{ p_case_id:id, p_to:to, p_reason:why });
+  if(error){ alert(errText(error)); return; }
+  showReassign=false; render();
+}
 // From "Branded ER Statement Template" (Ernie Zavaleta, July 2026) — the interview
 // guide used when discussing a report on a call. Shown next to HR notes so the
 // handler knows what to capture.
@@ -634,30 +714,49 @@ async function doAdvance(id,to){ const {error}=await sb.rpc("advance_state",{p_c
 async function sendHandlerMsg(id){ const v=$("hmsg")?.value.trim(); if(!v)return; const {error}=await sb.rpc("post_handler_message",{p_case_id:id,p_body:v}); if(error)alert(errText(error)); render(); }
 
 // ---- close-case modal (substantiated y/n is REQUIRED) ----
-function openCloseModal(caseId){ closeModal={open:true,caseId,sub:null,note:""}; render(); }
-function cancelCloseModal(){ closeModal={open:false,caseId:null,sub:null,note:""}; render(); }
+function openCloseModal(caseId, kind){ closeModal={open:true,caseId,kind:kind||"incident",sub:null,status:"",note:""}; render(); }
+function cancelCloseModal(){ closeModal={open:false,caseId:null,kind:"incident",sub:null,status:"",note:""}; render(); }
 function setCloseSub(v){ closeModal.sub=v; closeModal.note=$("close-note")?.value||""; render(); }
+function setCloseStatus(v){ closeModal.status=v; closeModal.note=$("close-note")?.value||""; }
 function renderCloseModal(){
+  const isReq = closeModal.kind==="request";
   return `<div class="modal-overlay" onclick="if(event.target===this)cancelCloseModal()">
     <div class="modal">
-      <h2 class="section" style="font-size:17px">Close this case</h2>
-      <p class="muted">Before closing, you must record whether the report was substantiated — was there evidence?</p>
-      <div class="radio-cards" style="margin-top:10px">
-        <div class="radio-card ${closeModal.sub===true?'sel':''}" onclick="setCloseSub(true)"><b>Substantiated</b><span class="muted">Yes — evidence supported the report.</span></div>
-        <div class="radio-card ${closeModal.sub===false?'sel':''}" onclick="setCloseSub(false)"><b>Not substantiated</b><span class="muted">No — evidence did not support it.</span></div>
-      </div>
+      <h2 class="section" style="font-size:17px">${isReq?'Close this request':'Close this case'}</h2>
+      ${isReq
+        ? `<p class="muted">Record the outcome before closing — this is what gets reported on.</p>
+           <label>Accommodation outcome</label>
+           <select onchange="setCloseStatus(this.value)">
+             <option value="">— select an outcome —</option>
+             ${ACC_STATUS.map(s=>`<option ${closeModal.status===s?'selected':''}>${s}</option>`).join("")}
+           </select>`
+        : `<p class="muted">Before closing, you must record whether the report was substantiated — was there evidence?</p>
+           <div class="radio-cards" style="margin-top:10px">
+             <div class="radio-card ${closeModal.sub===true?'sel':''}" onclick="setCloseSub(true)"><b>Substantiated</b><span class="muted">Yes — evidence supported the report.</span></div>
+             <div class="radio-card ${closeModal.sub===false?'sel':''}" onclick="setCloseSub(false)"><b>Not substantiated</b><span class="muted">No — evidence did not support it.</span></div>
+           </div>`}
       <label>Closing note (optional)</label>
       <textarea id="close-note" style="min-height:70px">${esc(closeModal.note)}</textarea>
       <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
         <button class="btn ghost" onclick="cancelCloseModal()">Cancel</button>
-        <button class="btn" ${closeModal.sub===null?'disabled':''} onclick="confirmClose()">Close case</button>
+        <button class="btn" ${(isReq ? !closeModal.status : closeModal.sub===null)?'disabled':''} onclick="confirmClose()">${isReq?'Close request':'Close case'}</button>
       </div>
     </div></div>`;
 }
 async function confirmClose(){
-  if(closeModal.sub===null) return;
+  const isReq = closeModal.kind==="request";
+  if(isReq ? !closeModal.status : closeModal.sub===null) return;
   const note = $("close-note")?.value || "";
-  const { error } = await sb.rpc("close_case",{ p_case_id:closeModal.caseId, p_substantiated:closeModal.sub, p_note:note });
+  if(isReq){
+    // write the outcome first (close_case refuses without one). Existing dates/duration
+    // are read back off the accommodation panel so saving here can't wipe them.
+    const { error:e1 } = await sb.rpc("set_accommodation",{
+      p_case_id:closeModal.caseId, p_status:closeModal.status,
+      p_start:$("acc-start")?.value||null, p_end:$("acc-end")?.value||null,
+      p_duration:$("acc-dur")?.value||null });
+    if(e1){ alert(errText(e1)); return; }
+  }
+  const { error } = await sb.rpc("close_case",{ p_case_id:closeModal.caseId, p_substantiated:isReq?null:closeModal.sub, p_note:note });
   if(error){ alert(errText(error)); return; }
   cancelCloseModal();
 }
