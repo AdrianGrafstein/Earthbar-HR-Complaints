@@ -37,9 +37,12 @@ grant select on hr_team to authenticated;
 -- deactivates the old assignment row, moves open tasks to the new owner, writes
 -- a 'routed' audit event, and emails the new owner.
 
--- delete_case(case) [migration 014, applied 2026-08-05] — handlers only, CLOSED
--- cases only ("Cannot delete an open case"); permanently removes the case, all
--- child rows, and its evidence storage entries.
+-- delete_case(case) [migrations 014+015, applied 2026-08-05] — handlers only,
+-- CLOSED cases only ("Cannot delete an open case"); permanently removes the case
+-- and all child rows. ⚠️ Supabase FORBIDS deleting storage.objects from SQL
+-- ("Use the Storage API instead") — evidence files stay in the bucket but become
+-- permanently unreadable (select policy requires can_see_case, false once the
+-- case row is gone).
 
 -- close_case is now intake-aware:
 --   incident -> requires substantiated true/false (unchanged)
