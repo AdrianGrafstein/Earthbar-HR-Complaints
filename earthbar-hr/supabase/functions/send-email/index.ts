@@ -1,5 +1,8 @@
 // send-email — drains notifications_outbox via Microsoft Graph.
-// DEPLOYED 2026-07-14 v9 (verify_jwt=false). Called by pg_net triggers + a
+// DEPLOYED 2026-08-05 v10 — DUPLICATE-SEND FIX: rows are claimed atomically via
+// claim_pending_emails() (pending -> sending, FOR UPDATE SKIP LOCKED) so
+// concurrent invocations can never send the same email twice. See migration 013.
+// Previously v9 (verify_jwt=false). Called by pg_net triggers + a
 // pg_cron sweep; safe because it takes no payload and only sends already-queued mail.
 // Secrets required: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET.
 // Sender addresses come from app_config keys mail_from_cases / mail_from_relay
