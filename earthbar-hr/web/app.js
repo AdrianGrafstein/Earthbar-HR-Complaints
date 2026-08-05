@@ -24,7 +24,35 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 
 const cfg = window.EARTHBAR_CONFIG || {};
-const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
+// --- SESSION POLICY (Adrian, 2026-08-05) -----------------------------------
+// HR data is sensitive, so a sign-in is deliberately short-lived:
+//   1. sessionStorage  -> the session dies when the app/browser is CLOSED.
+//   2. 24h idle limit  -> an app left open but unused for 24h forces a new code.
+// Activity resets the 24h clock. NOTE: this is enforced in the browser; the
+// authoritative server-side equivalents (Auth > Sessions > "Time-box user
+// sessions" / "Inactivity timeout") require the Supabase Pro plan.
+const IDLE_LIMIT_MS = 24 * 60 * 60 * 1000;
+const LAST_SEEN_KEY = "eb_hr_last_seen";
+const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
+  auth: {
+    storage: window.sessionStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
+function touchLastSeen(){ try { localStorage.setItem(LAST_SEEN_KEY, String(Date.now())); } catch {} }
+function idleTooLong(){
+  const last = Number(localStorage.getItem(LAST_SEEN_KEY) || 0);
+  return last > 0 && (Date.now() - last) > IDLE_LIMIT_MS;
+}
+async function forceSignOut(reason){
+  signedOutReason = reason || "";
+  try { localStorage.removeItem(LAST_SEEN_KEY); } catch {}
+  await sb.auth.signOut();
+  session = null; me = null; isHandler = false; isAdmin = false;
+  view = "home"; selected = null;
+}
 
 // NOTE (meeting 2026-07-13): harassment/discrimination is deliberately NOT an
 // option — HR classifies internally after review. FINAL LIST STILL OPEN — placeholder:
@@ -61,7 +89,7 @@ const SLABEL = { UnderReview:"Under Review", OnHold:"On Hold",
 const stlabel = s => SLABEL[s] || s;
 
 // ---- state ----
-let session = null, me = null, isHandler = false, isAdmin = false;
+let session = null, me = null, isHandler = false, isAdmin = false, signedOutReason = "";
 let dirList = [], dirMap = {}, storeList = [];
 let view = "home", selected = null, busy = false, errorMsg = "";
 let auth = { email:"", sent:false, err:"" };
@@ -113,9 +141,17 @@ Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
 async function boot(){
   const { data } = await sb.auth.getSession();
   session = data.session;
+  // an app left open but untouched for 24h requires a fresh code
+  if (session && idleTooLong()) await forceSignOut("idle");
   sb.auth.onAuthStateChange((_e, s) => { session = s; if (s) loadContext().then(render); else { me=null; render(); } });
-  if (session) await loadContext();
+  if (session) { touchLastSeen(); await loadContext(); }
   render();
+  // re-check whenever the tab is brought back to the front
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState !== "visible") return;
+    if (session && idleTooLong()) { await forceSignOut("idle"); render(); }
+    else if (session) touchLastSeen();
+  });
 }
 async function loadContext(){
   const email = (session.user.email || "").toLowerCase();
@@ -138,6 +174,7 @@ async function signInMicrosoft(){
     options:{ scopes:"openid email profile", redirectTo: window.location.href.split("#")[0] } });
 }
 async function sendOtp(){
+  signedOutReason = "";
   const email = ($("otp-email")?.value || "").trim().toLowerCase();
   if(!/^\S+@\S+\.\S+$/.test(email)){ auth.err = "Please enter a valid email address."; render(); return; }
   auth.email = email; auth.err = ""; busy = true; render();
@@ -186,6 +223,7 @@ function renderLogin(){
   if(!ok) return `<div class="card" style="max-width:520px;margin:40px auto">
     <div class="banner err">Configuration needed: set <b>SUPABASE_URL</b> and <b>SUPABASE_ANON_KEY</b> in <code>config.js</code>. See the README.</div></div>`;
   return `<div class="card" style="max-width:520px;margin:40px auto">
+    ${signedOutReason==="idle"?`<div class="banner warn" style="margin-bottom:14px"><b>You were signed out.</b> For security, sessions end after 24 hours without use. Sign in again to continue.</div>`:""}
     <h2 class="section">Sign in to Earthbar HR</h2>
     <p class="muted">Anyone can sign in with any email address — you don't need an @earthbar.com account. We'll email you a one-time code.</p>
     ${!auth.sent ? `
@@ -207,6 +245,7 @@ function renderLogin(){
       <svg width="16" height="16" viewBox="0 0 23 23" aria-hidden="true"><rect width="10" height="10" x="1" y="1" fill="#F25022"/><rect width="10" height="10" x="12" y="1" fill="#7FBA00"/><rect width="10" height="10" x="1" y="12" fill="#00A4EF"/><rect width="10" height="10" x="12" y="12" fill="#FFB900"/></svg>
       Sign in with Microsoft</button>
     <p class="note-sm" style="margin-top:14px">Reported anonymously before? You can check status any time with your claim code after signing in with any email.</p>
+    <p class="note-sm">For security, you'll be asked to sign in again each time you close the app, and after 24 hours without use.</p>
   </div>`;
 }
 window.addEventListener("otp-reset", ()=>{ auth={email:"",sent:false,err:""}; render(); });
@@ -877,6 +916,7 @@ function fmt(ts){ if(!ts) return ""; const d=new Date(ts); return d.toLocaleStri
 function fmtD(ts){ if(!ts) return "—"; const d=new Date(ts); return d.toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
 
 function render(){
+  if (session) touchLastSeen();   // any interaction resets the 24h idle clock
   renderUserBox(); renderNav();
   const el = $("app");
   if(!session){ el.innerHTML = renderLogin(); return; }
