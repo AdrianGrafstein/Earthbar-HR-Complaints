@@ -41,6 +41,15 @@ const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
     detectSessionInUrl: true,
   },
 });
+// Sessions used to live in localStorage (survived browser close). Purge any
+// leftover token for THIS project so an old long-lived refresh token can't sit
+// on the machine. Other Supabase apps' keys are left alone.
+(function purgeLegacySession(){
+  try {
+    const ref = (cfg.SUPABASE_URL||"").split("//")[1]?.split(".")[0];
+    if (ref) localStorage.removeItem(`sb-${ref}-auth-token`);
+  } catch {}
+})();
 function touchLastSeen(){ try { localStorage.setItem(LAST_SEEN_KEY, String(Date.now())); } catch {} }
 function idleTooLong(){
   const last = Number(localStorage.getItem(LAST_SEEN_KEY) || 0);
