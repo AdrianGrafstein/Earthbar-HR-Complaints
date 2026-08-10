@@ -1,5 +1,5 @@
 // auth-email-sender — Supabase Auth "Send Email" hook.
-// DEPLOYED 2026-08-05. Supabase generates the 6-digit OTP and calls this hook;
+// DEPLOYED 2026-08-05. Supabase generates the 8-digit OTP and calls this hook;
 // WE send the email through Microsoft Graph (hrcomplaints@earthbar.com), so:
 //   1. the email contains the CODE (the default template was link-only and
 //      uneditable on the free/current plan), and
@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
   }
 
   const to = evt?.user?.email;
-  const token = evt?.email_data?.token;             // the 6-digit OTP
+  const token = evt?.email_data?.token;             // the 8-digit OTP
   const action = evt?.email_data?.email_action_type; // magiclink | signup | recovery | ...
   if (!to || !token) return json({ error: "missing user/token" }, 400);
 
@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
     ? "Earthbar HR — your account recovery code"
     : "Your Earthbar HR sign-in code";
   const body =
-    `Your one-time sign-in code is:\n\n    ${token}\n\n` +
+    `Your 8-digit one-time sign-in code is:\n\n    ${token}\n\n` +
     `Enter it on the Earthbar HR sign-in screen to continue. The code expires shortly ` +
     `and can only be used once.\n\n` +
     `If you didn't request this, you can safely ignore this email.\n\n` +
