@@ -136,7 +136,7 @@ const caseRisk = c => c.risk_level || (c.severity === "High" ? "High" : null);
 const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.test(e?.message||"")
   ? "This action needs the v2 backend, which isn't deployed yet." : (e?.message || "Unknown error");
 
-Object.assign(window, { go, signInMicrosoft, sendOtp, verifyOtp, signOut,
+Object.assign(window, { go, sendOtp, verifyOtp, signOut,
   setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
   setDashView, addNote, toggleGuide, saveAccommodation, toggleReassign, doReassign, setCloseStatus,
   askDelete, cancelDelete, armDelete, doDelete,
@@ -177,10 +177,6 @@ async function loadContext(){
   }
   form.email = form.email || email; qform.email = qform.email || email;
   if (view === "dashboard" && !isHandler) view = "home";
-}
-async function signInMicrosoft(){
-  await sb.auth.signInWithOAuth({ provider:"azure",
-    options:{ scopes:"openid email profile", redirectTo: window.location.href.split("#")[0] } });
 }
 async function sendOtp(){
   signedOutReason = "";
@@ -226,7 +222,7 @@ function renderUserBox(){
     <button onclick="signOut()" style="background:#fff;color:#111;border:1px solid #111;padding:6px 12px;border-radius:2px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;cursor:pointer">Sign out</button>`;
 }
 
-// ---------------- LOGIN (email code for anyone; Microsoft for staff) ----------------
+// ---------------- LOGIN (email one-time code — the only sign-in method) --------
 function renderLogin(){
   const ok = cfg.SUPABASE_URL && !cfg.SUPABASE_URL.includes("YOUR-PROJECT");
   if(!ok) return `<div class="card" style="max-width:520px;margin:40px auto">
@@ -234,7 +230,7 @@ function renderLogin(){
   return `<div class="card" style="max-width:520px;margin:40px auto">
     ${signedOutReason==="idle"?`<div class="banner warn" style="margin-bottom:14px"><b>You were signed out.</b> For security, sessions end after 24 hours without use. Sign in again to continue.</div>`:""}
     <h2 class="section">Sign in to Earthbar HR</h2>
-    <p class="muted">Anyone can sign in with any email address — you don't need an @earthbar.com account. We'll email you a one-time code.</p>
+    <p class="muted">Enter your email and we'll send you a one-time code. You don't need an @earthbar.com account — any email works.</p>
     ${!auth.sent ? `
       <label>Email address</label>
       <input id="otp-email" type="text" placeholder="you@example.com" value="${esc(auth.email)}">
@@ -249,11 +245,7 @@ function renderLogin(){
       </div>`}
     ${auth.err?`<div class="banner err">${esc(auth.err)}</div>`:""}
     <div class="divider"></div>
-    <p class="muted" style="font-size:13px">Earthbar staff can also use single sign-on:</p>
-    <button class="btn ms" onclick="signInMicrosoft()">
-      <svg width="16" height="16" viewBox="0 0 23 23" aria-hidden="true"><rect width="10" height="10" x="1" y="1" fill="#F25022"/><rect width="10" height="10" x="12" y="1" fill="#7FBA00"/><rect width="10" height="10" x="1" y="12" fill="#00A4EF"/><rect width="10" height="10" x="12" y="12" fill="#FFB900"/></svg>
-      Sign in with Microsoft</button>
-    <p class="note-sm" style="margin-top:14px">Reported anonymously before? You can check status any time with your claim code after signing in with any email.</p>
+    <p class="note-sm">Reported anonymously before? You can check status any time with your claim code after signing in.</p>
     <p class="note-sm">For security, you'll be asked to sign in again each time you close the app, and after 24 hours without use.</p>
   </div>`;
 }
