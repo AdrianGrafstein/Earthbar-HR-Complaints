@@ -1,0 +1,37 @@
+-- ============================================================================
+-- 014 (repo) — v4 FINAL FEEDBACK (Vicky + Lindsey), APPLIED 2026-08-11 as prod
+-- migrations: v4_final_feedback_schema, v4_final_feedback_functions,
+-- v4_submit_with_state. Full SQL lives in the Supabase migration history;
+-- this file records the shape.
+--
+-- SCHEMA
+--  * cases.us_state + store_states(store -> us_state) seeded for ~95 stores
+--    (source: StoreRef_WorldCup state mapping + manual name variants).
+--  * NEW INCIDENT LIFECYCLE (incidents only; requests unchanged):
+--      New · Assigned · Under Review · Investigation · Decision Pending ·
+--      Action/Monitoring · On Hold · Closed · Reopened
+--    Existing rows migrated (Submitted/Triage->New, Action/Resolved->
+--    ActionMonitoring, Escalated->UnderReview).
+--  * case_allegations(case_id, allegation, finding) — finding one of:
+--      Substantiated · Partially Substantiated · Unsubstantiated · Inconclusive ·
+--      No Policy Violation · Withdrawn · Referred Elsewhere
+--    RLS: HR handlers who can see the case. UNIQUE(case_id, allegation).
+--  * case_interviews(interviewee, role_in_case, interview_date, interviewer,
+--    status Scheduled/Completed/Canceled, notes, follow_up) — HR-only, notes
+--    EDITABLE (Lindsey: live note-taking; evidence files stay immutable).
+--  * corrective_actions(action_type, responsible, due_date, completed_date,
+--    notes) — HR-only (Vicky: restrict to authorized HR users).
+--
+-- FUNCTIONS
+--  * add_allegation / remove_allegation / set_finding (audit events on each)
+--  * save_interview(upsert) / delete_interview
+--  * save_corrective_action(upsert) / delete_corrective_action
+--  * set_task_status(task, done) — Lindsey: tasks can be crossed off/reopened
+--  * close_case: INCIDENTS now close on findings — >=1 allegation and a finding
+--    on every one (substantiated boolean retired); requests unchanged
+--    (accommodation outcome required). Case status thereby stays separate from
+--    investigation outcome (Vicky).
+--  * advance_state: legacy Resolve/Review hooks removed; Assigned still spawns
+--    the 72h review task for incidents.
+--  * submit_case_v2 + p_us_state (13 params, old signature dropped); incidents
+--    enter at 'New'; state auto-derived from store_states when omitted.

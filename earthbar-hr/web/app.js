@@ -70,6 +70,22 @@ const RELATIONSHIPS = ["Employee","Former employee","Customer","Vendor / partner
 const REQUEST_TYPES = ["Accommodation — Religious","Accommodation — Medical","Accommodation — Other","Other request"];
 const RISKS = ["Low","Medium","High"];
 const PARTY_ROLES = ["subject","victim","witness"];
+// Neutral wording (Vicky): stored value stays 'victim' for data continuity,
+// but it is ALWAYS displayed as "Impacted team member".
+const ROLE_LABEL = { subject:"Subject", victim:"Impacted team member", witness:"Witness" };
+const rlabel = r => ROLE_LABEL[r] || r;
+// ER case lifecycle (Vicky) — incidents only; requests keep their own lifecycle.
+const INCIDENT_STATES = ["New","Assigned","UnderReview","Investigation","DecisionPending","ActionMonitoring","OnHold"];
+const FINDINGS = ["Substantiated","Partially Substantiated","Unsubstantiated","Inconclusive","No Policy Violation","Withdrawn","Referred Elsewhere"];
+const ALLEGATION_TYPES = ["Harassment","Discrimination","Retaliation","Bullying / abusive conduct","Workplace violence / threats",
+  "Safety violation","Wage & hour / timekeeping","Attendance / leave","Theft / dishonesty","Confidentiality breach",
+  "Fraternization","Substance policy","Code of conduct — other"];
+const POLICY_LIST = ["Equal Employment Opportunity","Anti-Harassment Policy","Gossip, Bullying, Abusive Conduct or Communications",
+  "Complaint Procedure","Reasonable Accommodations","Fraternization","Meal Period and Rest Break Policy","Attendance",
+  "Confidential Information","Workplace safety","Work Schedules","Other (see notes)"];
+const CORRECTIVE_TYPES = ["Coaching / counseling","Verbal warning","Written warning","Final warning","Suspension",
+  "Termination","Training required","Schedule / transfer change","Policy change","Other"];
+const INTERVIEW_STATUS = ["Scheduled","Completed","Canceled"];
 // --- accommodation requests (Vicky, 2026-07-23) ---
 const ACC_STATUS = ["Approved","Approved with Alternative","Denied","Withdrawn"];
 // NOTE: the medical form offers Permanent/Temporary/Unknown; Vicky asked for these two.
@@ -94,12 +110,13 @@ const NEXT = {
   OnHold:["UnderReview"], Escalated:["Assigned"], Closed:["UnderReview"],
 };
 const SLABEL = { UnderReview:"Under Review", OnHold:"On Hold",
-  AwaitingInformation:"Awaiting Information", InInteractiveProcess:"In Interactive Process" };
+  AwaitingInformation:"Awaiting Information", InInteractiveProcess:"In Interactive Process",
+  DecisionPending:"Decision Pending", ActionMonitoring:"Action / Monitoring" };
 const stlabel = s => SLABEL[s] || s;
 
 // ---- state ----
 let session = null, me = null, isHandler = false, isAdmin = false, signedOutReason = "";
-let dirList = [], dirMap = {}, storeList = [];
+let dirList = [], dirMap = {}, storeList = [], stateMap = {}, statesList = [];
 let view = "home", selected = null, busy = false, errorMsg = "";
 let auth = { email:"", sent:false, err:"" };
 let form = blankIncident();
@@ -117,10 +134,27 @@ let evidence = { list:[], err:"" };
 
 function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 function blankIncident(isManual = false){
-  return { anonymous:false, location:"", relationship:"Employee", role:"",
+  return { anonymous:false, location:"", usState:"", relationship:"Employee", role:"",
     category:CATEGORIES[0], parties:[], pQuery:"", pType:"employee", pName:"",
     pRole:"subject", description:"", email:"", phone:"", files:[], manual:isManual,
     incidentDate: todayStr() };
+}
+// Location dropdown grouped by state; if a state is chosen, only its stores show.
+function locationOptions(selected, chosenState){
+  const groups = {};
+  for (const s of storeList){
+    const st = stateMap[s] || "Other";
+    if (chosenState && st !== chosenState) continue;
+    (groups[st] = groups[st] || []).push(s);
+  }
+  let html = `<option value="">— Select a location —</option>`;
+  for (const st of Object.keys(groups).sort()){
+    html += `<optgroup label="${esc(st)}">` +
+      groups[st].map(s=>`<option value="${esc(s)}" ${selected===s?'selected':''}>${esc(s)}</option>`).join("") +
+      `</optgroup>`;
+  }
+  html += `<option value="Other / not store-specific" ${selected==='Other / not store-specific'?'selected':''}>Other / not store-specific</option>`;
+  return html;
 }
 
 const $ = id => document.getElementById(id);
@@ -140,6 +174,9 @@ Object.assign(window, { go, sendOtp, verifyOtp, signOut,
   setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
   setDashView, addNote, toggleGuide, saveAccommodation, toggleReassign, doReassign, setCloseStatus,
   askDelete, cancelDelete, armDelete, doDelete,
+  addAllegationUI, setFindingUI, removeAllegationUI, addPolicyChip, removePolicyChip,
+  saveInterviewUI, addInterviewUI, deleteInterviewUI, saveActionUI, addActionUI, deleteActionUI,
+  toggleTask, evDownload,
   openCase, closeCase, doAdvance, sendHandlerMsg, doStatusCheck, sendReporterReply,
   setFilter, applyFilters, toggleFilters, toggleManual, setM, mAddParty, mRmParty, mOnPartyInput, mPickPartyEmp, submitManual,
   openCloseModal, cancelCloseModal, setCloseSub, confirmClose,
@@ -168,6 +205,9 @@ async function loadContext(){
   dirList = dir || [];
   dirMap = Object.fromEntries(dirList.map(d => [d.employee_id, d]));
   storeList = [...new Set(dirList.map(d => d.store).filter(Boolean))].sort();
+  const { data: ss } = await sb.from("store_states").select("store,us_state");
+  stateMap = Object.fromEntries((ss||[]).map(r => [r.store, r.us_state]));
+  statesList = [...new Set(Object.values(stateMap))].sort();
   me = dirList.find(d => (d.email||"").toLowerCase() === email) || { name: session.user.user_metadata?.name || email, title:null, email };
   const [a, h] = await Promise.all([ sb.rpc("app_is_admin"), sb.rpc("app_is_handler") ]);
   isAdmin = !!a.data; isHandler = !!h.data;
@@ -317,7 +357,7 @@ function partyBuilder(f, pre){
       <div class="col" style="min-width:130px"><span class="mini-l">They are a…</span>
         <select onchange="${P.set}('pType',this.value)"><option value="employee" ${f.pType==='employee'?'selected':''}>Earthbar employee</option><option value="customer" ${f.pType==='customer'?'selected':''}>Customer</option></select></div>
       <div class="col" style="min-width:130px"><span class="mini-l">Their role in this</span>
-        <select onchange="${P.set}('pRole',this.value)">${PARTY_ROLES.map(r=>`<option ${f.pRole===r?'selected':''}>${r}</option>`).join("")}</select></div>
+        <select onchange="${P.set}('pRole',this.value)">${PARTY_ROLES.map(r=>`<option value="${r}" ${f.pRole===r?'selected':''}>${rlabel(r)}</option>`).join("")}</select></div>
       <div class="col" style="min-width:220px">
         ${f.pType==="employee"
           ? `<span class="mini-l">Find the employee</span><input id="${pre}psearch" type="text" placeholder="Search a name or title…" value="${esc(f.pQuery)}" oninput="${P.input}(this.value)">`
@@ -326,7 +366,7 @@ function partyBuilder(f, pre){
       </div>
     </div>
     ${results.map(d=>`<div class="subj-result" onclick="${P.pick}('${d.employee_id}')">${esc(d.name)} — <span class="muted">${esc(d.title||'')}${d.store?' · '+esc(d.store):''}</span></div>`).join("")}
-    <div style="margin-top:8px">${f.parties.map((p,i)=>`<span class="chip" style="margin-right:6px">${p.type==='employee'?esc(nameOf(p.id)):esc(p.name)+' (customer)'} · <i>${p.role_in_case}</i> <a onclick="${P.rm}(${i})" style="cursor:pointer;color:var(--red);font-weight:700">×</a></span>`).join("") || '<span class="muted">No one added yet.</span>'}</div>`;
+    <div style="margin-top:8px">${f.parties.map((p,i)=>`<span class="chip" style="margin-right:6px">${p.type==='employee'?esc(nameOf(p.id)):esc(p.name)+' (customer)'} · <i>${rlabel(p.role_in_case)}</i> <a onclick="${P.rm}(${i})" style="cursor:pointer;color:var(--red);font-weight:700">×</a></span>`).join("") || '<span class="muted">No one added yet.</span>'}</div>`;
 }
 function renderIncident(){
   return `<div class="card">
@@ -334,8 +374,10 @@ function renderIncident(){
     <h2 class="section">Report an incident</h2>
     <p class="muted">Only the assigned HR handler can see this — never anyone the report is about.</p>
 
+    <label>Which state is this about?</label>
+    <select onchange="setF('usState',this.value);setF('location','')">${["",...statesList].map(s=>`<option value="${esc(s)}" ${form.usState===s?'selected':''}>${s||'— Select a state —'}</option>`).join("")}</select>
     <label>Which location is this about?</label>
-    <select onchange="setF('location',this.value)">${["",...storeList,"Other / not store-specific"].map(s=>`<option value="${esc(s)}" ${form.location===s?'selected':''}>${s||'— Select a location —'}</option>`).join("")}</select>
+    <select onchange="setF('location',this.value)">${locationOptions(form.location, form.usState)}</select>
 
     <label>When did this happen?</label>
     <input type="date" max="${todayStr()}" value="${esc(form.incidentDate)}" onchange="setF('incidentDate',this.value||todayStr(),true)">
@@ -396,7 +438,7 @@ async function submitIncident(){
     p_intake_type:"incident", p_category:form.category, p_description:form.description,
     p_anonymous:form.anonymous, p_location:form.location, p_relationship:form.relationship,
     p_role:form.role||null, p_contact_email:form.email, p_contact_phone:form.phone||null,
-    p_parties:form.parties, p_manual:false, p_incident_date:form.incidentDate });
+    p_parties:form.parties, p_manual:false, p_incident_date:form.incidentDate, p_us_state:form.usState||null });
   if(error){ busy=false; errorMsg = errText(error); render(); return; }
   // upload evidence after the case exists
   let upNote = "";
@@ -438,15 +480,21 @@ function setDashView(v){ dashView=v; showManual=false; filters={ q:"", risk:"", 
 async function renderDashboardInto(el){
   // NOTE: no select("*") on cases — reporter_email/phone are column-locked
   // server-side (anonymity guarantee); requesting them is permission-denied.
-  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at,accommodation_status,accommodation_start,accommodation_end,accommodation_duration";
+  const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,us_state,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at,accommodation_status,accommodation_start,accommodation_end,accommodation_duration";
   const { data:all, error } = await sb.from("cases")
-    .select(CASE_COLS + ", tasks(status,due_at)")
+    .select(CASE_COLS + ", tasks(status,due_at), case_parties(subject_id,display_name,party_type,role_in_case)")
     .order("created_at",{ascending:false});
   if(error){ el.innerHTML = `<div class="card"><div class="banner err">Could not load cases: ${esc(error.message)}</div></div>`; return; }
   const isReq = dashView === "requests";
   const pool = (all||[]).filter(c => isReq ? c.intake_type === "request" : c.intake_type !== "request");
   const now = Date.now();
   const overdue = c => (c.tasks||[]).some(t => t.status==="open" && t.due_at && new Date(t.due_at).getTime() < now);
+  // Lindsey: see who's implicated without opening the case
+  const involved = c => (c.case_parties||[]).map(p =>
+      p.party_type==="customer" || (!p.subject_id && p.display_name)
+        ? `${p.display_name||"Customer"} (customer)` : nameOf(p.subject_id)
+    ).filter(Boolean).join(", ");
+  const locState = c => c.location ? `${esc(c.location)}${c.us_state?`, ${esc(c.us_state)}`:""}` : (c.us_state?esc(c.us_state):"—");
   const q = ($("flt-q")?.value ?? filters.q).toLowerCase();
   filters.q = q;
   const fromT = filters.from ? new Date(filters.from + "T00:00:00").getTime() : null;
@@ -458,9 +506,10 @@ async function renderDashboardInto(el){
     (!filters.handler || (filters.handler==="__ext" ? c.external : c.handler_id===filters.handler)) &&
     (!isReq || !filters.acc || (filters.acc==="__none" ? !c.accommodation_status : c.accommodation_status===filters.acc)) &&
     (!isReq || !filters.dur || c.accommodation_duration===filters.dur) &&
+    (!filters.us || c.us_state===filters.us) &&
     (!fromT || new Date(c.created_at).getTime() >= fromT) &&
     (!toT   || new Date(c.created_at).getTime() <= toT) &&
-    (!q || (c.ref||"").toLowerCase().includes(q) || (c.description||"").toLowerCase().includes(q) || (c.location||"").toLowerCase().includes(q)));
+    (!q || (c.ref||"").toLowerCase().includes(q) || (c.description||"").toLowerCase().includes(q) || (c.location||"").toLowerCase().includes(q) || involved(c).toLowerCase().includes(q)));
   const open = pool.filter(c=>c.state!=="Closed").length;
   const hi = pool.filter(c=>caseRisk(c)==="High").length;
   const od = pool.filter(overdue).length;
@@ -468,7 +517,7 @@ async function renderDashboardInto(el){
   // every category/state/team-member is offered even before any case uses it.
   const catOpts = [...new Set([...(isReq?REQUEST_TYPES:CATEGORIES), ...pool.map(c=>c.category)])].filter(Boolean);
   const stateOpts = isReq ? [...REQ_STATES,"Closed"]
-                          : [...new Set([...Object.keys(NEXT), ...pool.map(c=>c.state)])];
+                          : [...new Set([...INCIDENT_STATES,"Closed","Reopened", ...pool.map(c=>c.state)])];
   const handlers = hrTeam.map(t=>[t.employee_id, nameOf(t.employee_id)]);
   el.innerHTML = `<div class="card">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -498,6 +547,7 @@ async function renderDashboardInto(el){
         ${isReq?`<select onchange="setFilter('acc',this.value);applyFilters()"><option value="">Outcome: all</option>${ACC_STATUS.map(s=>`<option ${filters.acc===s?'selected':''}>${s}</option>`).join("")}<option value="__none" ${filters.acc==='__none'?'selected':''}>Not yet decided</option></select>
         <select onchange="setFilter('dur',this.value);applyFilters()"><option value="">Duration: all</option>${ACC_DURATION.map(d=>`<option ${filters.dur===d?'selected':''}>${d}</option>`).join("")}</select>`:""}
         <select onchange="setFilter('handler',this.value);applyFilters()"><option value="">${isReq?'Case owner':'Handler'}: all</option>${handlers.map(([id,n])=>`<option value="${id}" ${filters.handler===id?'selected':''}>${esc(n)}</option>`).join("")}<option value="__ext" ${filters.handler==='__ext'?'selected':''}>External advisor</option></select>
+        <select onchange="setFilter('us',this.value);applyFilters()"><option value="">State: all</option>${statesList.map(s=>`<option ${filters.us===s?'selected':''}>${s}</option>`).join("")}</select>
         <span class="mini-l" style="margin:0">Opened</span>
         <input id="flt-from" type="date" value="${esc(filters.from||'')}" onchange="applyFilters()" style="flex:0 1 150px;width:auto">
         <span class="muted">to</span>
@@ -519,18 +569,20 @@ async function renderDashboardInto(el){
         <td>${accPill(c.accommodation_status)}</td>
         <td><button class="btn sm ghost" onclick="event.stopPropagation();askDelete('${c.id}','${c.state}','${esc(c.ref)}')">Delete</button></td>
       </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
-      : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Reporter</th><th>Handler</th><th>State</th><th>SLA</th></tr></thead>
+      : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Location</th><th>Reporter</th><th>Involved</th><th>Handler</th><th>Status</th><th>SLA</th><th></th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk ${overdue(c)?'overdue':''}" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${riskPill(caseRisk(c))}</td>
         <td>${esc(c.category)}</td>
         <td>${fmtD(c.created_at)}</td>
+        <td>${locState(c)}</td>
         <td>${c.anonymous?'<span class="chip">Anonymous</span>':esc(c.reporter_display||'Named')}</td>
+        <td>${esc(involved(c))||'—'}</td>
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
         <td>${overdue(c)?'<span class="pill due-over">Overdue</span>':'<span class="pill due-ok">On track</span>'}</td>
         <td><button class="btn sm ghost" onclick="event.stopPropagation();askDelete('${c.id}','${c.state}','${esc(c.ref)}')">Delete</button></td>
-      </tr>`).join("") : `<tr><td colspan="9" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
+      </tr>`).join("") : `<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
     </table></div>
     ${deleteModal.open?renderDeleteModal():""}`;
 }
@@ -570,7 +622,7 @@ function renderManual(){
     <h2 class="section" style="font-size:16px">Add a case manually <span class="chip">received outside the portal</span></h2>
     <label>Reporter's email (if known)</label><input id="m-email" type="text" value="${esc(manual.email)}">
     <label>Location</label>
-    <select onchange="setM('location',this.value)">${["",...storeList,"Other / not store-specific"].map(s=>`<option value="${esc(s)}" ${manual.location===s?'selected':''}>${s||'— Select —'}</option>`).join("")}</select>
+    <select onchange="setM('location',this.value)">${locationOptions(manual.location, "")}</select>
     <label>Category</label>
     <select onchange="setM('category',this.value)">${CATEGORIES.map(c=>`<option ${manual.category===c?'selected':''}>${c}</option>`).join("")}</select>
     <label>When did it happen? (if known)</label>
@@ -605,14 +657,19 @@ async function submitManual(){
 // ---- case detail ----
 async function renderCaseDetailInto(el, id){
   const CASE_COLS = "id,ref,category,description,severity,anonymous,handler_id,external,route_reason,state,created_at,closed_at,incident_date,intake_type,location,reporter_relationship,reporter_role,reporter_display,risk_level,substantiated,substantiated_note,policies,ai_summary,manual_entry,updated_at,accommodation_status,accommodation_start,accommodation_end,accommodation_duration";
-  const [{data:c}, {data:parties}, {data:events}, {data:tasks}, {data:messages}, {data:notes}] = await Promise.all([
+  const [{data:c}, {data:parties}, {data:events}, {data:tasks}, {data:messages}, {data:notes},
+         {data:allegs}, {data:ivs}, {data:actions}] = await Promise.all([
     sb.from("cases").select(CASE_COLS).eq("id",id).maybeSingle(),
     sb.from("case_parties").select("*").eq("case_id",id),
     sb.from("case_events").select("*").eq("case_id",id).order("at",{ascending:true}),
     sb.from("tasks").select("*").eq("case_id",id).order("created_at",{ascending:true}),
     sb.from("messages").select("*").eq("case_id",id).order("created_at",{ascending:true}),
     sb.from("case_notes").select("*").eq("case_id",id).order("created_at",{ascending:true}),
+    sb.from("case_allegations").select("*").eq("case_id",id).order("created_at",{ascending:true}),
+    sb.from("case_interviews").select("*").eq("case_id",id).order("created_at",{ascending:true}),
+    sb.from("corrective_actions").select("*").eq("case_id",id).order("created_at",{ascending:true}),
   ]);
+  caseAllegs = allegs || [];   // used by the close modal gate
   if(!c){ el.innerHTML=`<button class="back" onclick="closeCase()">← Back</button><div class="card"><div class="banner warn">This case isn't available to you.</div></div>`; return; }
   // evidence list (bucket may not exist pre-v2 — degrade quietly)
   sb.storage.from("evidence").list(id).then(({data,error})=>{
@@ -621,13 +678,15 @@ async function renderCaseDetailInto(el, id){
   });
   const handlerName = c.external ? "External advisor" : nameOf(c.handler_id);
   const isReq = c.intake_type === "request";
-  const nexts = isReq ? REQ_STATES.filter(s=>s!==c.state)
-                      : (NEXT[c.state] || []).filter(n=>n!=="Closed");
-  const canClose = isReq ? c.state!=="Closed" : (NEXT[c.state]||[]).includes("Closed");
+  // Loose transitions for both lifecycles; Reopened only offered from Closed.
+  const nexts = isReq
+    ? (c.state==="Closed" ? ["Assigned"] : REQ_STATES.filter(s=>s!==c.state))
+    : (c.state==="Closed" ? ["Reopened"] : INCIDENT_STATES.filter(s=>s!==c.state));
+  const canClose = c.state !== "Closed";
   const now = Date.now();
   const partyLine = p => p.party_type==="customer" || (!p.subject_id && p.display_name)
-      ? `${esc(p.display_name||"Customer")} (customer, ${esc(p.role_in_case)})`
-      : `${esc(nameOf(p.subject_id))} (${esc(roleOf(p.subject_id))}${p.role_in_case&&p.role_in_case!=='subject'?', '+esc(p.role_in_case):''})`;
+      ? `${esc(p.display_name||"Customer")} (customer, ${esc(rlabel(p.role_in_case))})`
+      : `${esc(nameOf(p.subject_id))} (${esc(roleOf(p.subject_id))}${p.role_in_case&&p.role_in_case!=='subject'?', '+esc(rlabel(p.role_in_case)):''})`;
   el.innerHTML = `<button class="back" onclick="closeCase()">← Back to dashboard</button>
   <div class="card">
     <div style="display:flex;align-items:center;gap:10px"><span class="ref" style="font-size:16px">${esc(c.ref)}</span>${pill(c.state)}${riskPill(caseRisk(c))}${isReq&&c.accommodation_status?accPill(c.accommodation_status):''}${!isReq&&c.substantiated===true?'<span class="chip">Substantiated</span>':!isReq&&c.substantiated===false?'<span class="chip" style="background:#F1F1F4;color:#475467">Unsubstantiated</span>':''}</div>
@@ -654,8 +713,30 @@ async function renderCaseDetailInto(el, id){
       <div class="col"><div class="kv"><span class="k">Description</span></div><div class="banner" style="background:#fff;border:1px solid var(--line)">${esc(c.description)}</div>
         ${c.ai_summary?`<div class="kv" style="margin-top:8px"><span class="k">AI review</span></div><div class="banner info">${esc(c.ai_summary)}</div>`:""}</div>
     </div>
-    ${!isReq?`<label>Realms &amp; policies in question</label>
-    <div style="display:flex;gap:8px"><input id="pol" type="text" placeholder="e.g. Anti-harassment policy §3; Timekeeping policy" value="${esc(c.policies||'')}"><button class="btn sm sec" onclick="savePolicies('${c.id}')">Save</button></div>`:""}
+    ${!isReq?`<label>Allegations &amp; Policies Potentially Implicated</label>
+    <div class="alleg-wrap">
+      <span class="mini-l">Allegations — each needs a finding before the case can close</span>
+      ${(allegs||[]).length?(allegs||[]).map(a=>`
+        <div class="alleg-row">
+          <b>${esc(a.allegation)}</b>
+          <select onchange="setFindingUI('${a.id}',this.value)" style="width:auto;min-width:190px">
+            <option value="">— finding pending —</option>
+            ${FINDINGS.map(f=>`<option ${a.finding===f?'selected':''}>${f}</option>`).join("")}
+          </select>
+          <a onclick="removeAllegationUI('${a.id}')" style="cursor:pointer;color:var(--red);font-weight:700">×</a>
+        </div>`).join(""):'<p class="muted" style="margin:6px 0">No allegations recorded yet.</p>'}
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+        <select id="alg-sel" style="width:auto;min-width:200px">${ALLEGATION_TYPES.map(a=>`<option>${a}</option>`).join("")}<option value="__custom">Other (type below)…</option></select>
+        <input id="alg-custom" type="text" placeholder="Custom allegation (if Other)" style="width:auto;flex:1;min-width:160px">
+        <button class="btn sm sec" onclick="addAllegationUI('${c.id}')">Add allegation</button>
+      </div>
+      <span class="mini-l" style="margin-top:14px">Policies potentially implicated</span>
+      <div style="margin:6px 0">${(c.policies||'').split(';').map(s=>s.trim()).filter(Boolean).map(p=>`<span class="chip" style="margin:0 6px 6px 0">${esc(p)} <a onclick="removePolicyChip('${c.id}','${esc(p).replace(/'/g,"\\'")}')" style="cursor:pointer;color:var(--red);font-weight:700">×</a></span>`).join("")||'<span class="muted">None selected.</span>'}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="pol-sel" style="width:auto;min-width:220px">${POLICY_LIST.map(p=>`<option>${p}</option>`).join("")}</select>
+        <button class="btn sm sec" onclick="addPolicyChip('${c.id}')">Add policy</button>
+      </div>
+    </div>`:""}
     <div class="divider"></div>
     <b style="font-size:13px">${isReq?'Move this request to':'Advance case state'}</b>
     <div style="margin-top:8px">
@@ -687,9 +768,68 @@ async function renderCaseDetailInto(el, id){
       ${(tasks||[]).length?tasks.map(t=>{const over=t.status==="open"&&t.due_at&&new Date(t.due_at).getTime()<now;
         return `<div class="task">
           <span style="${t.status==='done'?'text-decoration:line-through;color:var(--grey)':''}">${esc(t.title)}</span>
-          <span class="due" style="color:${over?'var(--red)':'var(--grey)'}">${t.status==='done'?'Done':(over?'Overdue':'Due '+fmt(t.due_at))}</span></div>`;}).join(""):'<span class="muted">No tasks.</span>'}
+          <span class="due" style="color:${over?'var(--red)':'var(--grey)'}">${t.status==='done'?'Done':(over?'Overdue':'Due '+fmt(t.due_at))}</span>
+          <button class="btn sm ghost" onclick="toggleTask('${t.id}',${t.status!=='done'})">${t.status==='done'?'Reopen':'Mark done'}</button></div>`;}).join(""):'<span class="muted">No tasks.</span>'}
     </div></div>
   </div>
+  ${!isReq?`<div class="card"><b>Interviews</b> <span class="chip">internal — HR team only</span>
+    <p class="note-sm" style="margin-top:4px">Prepare questions in Notes before the call and type during it — notes save when you click away from the box (and with Save). Unlike evidence, these stay editable.</p>
+    <div style="margin-top:10px">
+    ${(ivs||[]).length?(ivs||[]).map(iv=>`
+      <div class="iv-row" id="iv-${iv.id}">
+        <div class="iv-grid">
+          <span><span class="mini-l">Person interviewed</span><input id="iv-name-${iv.id}" type="text" value="${esc(iv.interviewee)}"></span>
+          <span><span class="mini-l">Role in case</span><select id="iv-role-${iv.id}">${["subject","victim","witness","Other"].map(r=>`<option value="${r}" ${iv.role_in_case===r?'selected':''}>${rlabel(r)}</option>`).join("")}</select></span>
+          <span><span class="mini-l">Date</span><input id="iv-date-${iv.id}" type="date" value="${esc(iv.interview_date||'')}"></span>
+          <span><span class="mini-l">Interviewer</span><input id="iv-by-${iv.id}" type="text" value="${esc(iv.interviewer||'')}"></span>
+          <span><span class="mini-l">Status</span><select id="iv-status-${iv.id}">${INTERVIEW_STATUS.map(s=>`<option ${iv.status===s?'selected':''}>${s}</option>`).join("")}</select></span>
+          <span><span class="mini-l">Follow-up needed</span><input id="iv-fu-${iv.id}" type="text" value="${esc(iv.follow_up||'')}" placeholder="e.g. get schedule records"></span>
+        </div>
+        <span class="mini-l" style="margin-top:8px">Questions &amp; notes</span>
+        <textarea id="iv-notes-${iv.id}" style="min-height:90px" onblur="saveInterviewUI('${c.id}','${iv.id}',true)">${esc(iv.notes||'')}</textarea>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn sm sec" onclick="saveInterviewUI('${c.id}','${iv.id}')">Save</button>
+          <span class="muted" id="iv-saved-${iv.id}" style="font-size:12px;align-self:center"></span>
+          <button class="btn sm ghost" style="margin-left:auto" onclick="deleteInterviewUI('${iv.id}')">Remove</button>
+        </div>
+      </div>`).join(""):'<p class="muted">No interviews yet.</p>'}
+    </div>
+    <div class="divider"></div>
+    <span class="mini-l">Add an interview</span>
+    <div class="iv-grid" style="margin-top:6px">
+      <span><span class="mini-l">Person interviewed</span><input id="ni-name" type="text" placeholder="Name"></span>
+      <span><span class="mini-l">Role in case</span><select id="ni-role">${["subject","victim","witness","Other"].map(r=>`<option value="${r}">${rlabel(r)}</option>`).join("")}</select></span>
+      <span><span class="mini-l">Date</span><input id="ni-date" type="date"></span>
+      <span><span class="mini-l">Interviewer</span><input id="ni-by" type="text" value="${esc(me?.name||'')}"></span>
+    </div>
+    <div style="margin-top:10px"><button class="btn sm" onclick="addInterviewUI('${c.id}')">Add interview</button></div>
+  </div>
+  <div class="card"><b>Corrective Actions</b> <span class="chip">restricted — HR team only</span>
+    <div style="margin-top:10px">
+    ${(actions||[]).length?(actions||[]).map(a=>`
+      <div class="iv-row">
+        <div class="iv-grid">
+          <span><span class="mini-l">Action type</span><select id="ca-type-${a.id}">${CORRECTIVE_TYPES.map(t=>`<option ${a.action_type===t?'selected':''}>${t}</option>`).join("")}</select></span>
+          <span><span class="mini-l">Responsible person</span><input id="ca-resp-${a.id}" type="text" value="${esc(a.responsible||'')}"></span>
+          <span><span class="mini-l">Due date</span><input id="ca-due-${a.id}" type="date" value="${esc(a.due_date||'')}"></span>
+          <span><span class="mini-l">Completed</span><input id="ca-done-${a.id}" type="date" value="${esc(a.completed_date||'')}"></span>
+        </div>
+        <span class="mini-l" style="margin-top:8px">Notes</span>
+        <input id="ca-notes-${a.id}" type="text" value="${esc(a.notes||'')}">
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn sm sec" onclick="saveActionUI('${c.id}','${a.id}')">Save</button>
+          <button class="btn sm ghost" style="margin-left:auto" onclick="deleteActionUI('${a.id}')">Remove</button>
+        </div>
+      </div>`).join(""):'<p class="muted">No corrective actions recorded.</p>'}
+    </div>
+    <div class="divider"></div>
+    <div class="iv-grid">
+      <span><span class="mini-l">Action type</span><select id="na-type">${CORRECTIVE_TYPES.map(t=>`<option>${t}</option>`).join("")}</select></span>
+      <span><span class="mini-l">Responsible person</span><input id="na-resp" type="text" placeholder="Who carries it out"></span>
+      <span><span class="mini-l">Due date</span><input id="na-due" type="date"></span>
+    </div>
+    <div style="margin-top:10px"><button class="btn sm" onclick="addActionUI('${c.id}')">Add corrective action</button></div>
+  </div>`:""}
   <div class="card"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b>HR notes</b> <span class="chip">internal — visible to the HR team only</span>
     <button class="btn sm ghost" style="margin-left:auto" onclick="toggleGuide()">${showGuide?'Hide guide':L(c,'guide')}</button></div>
     ${showGuide?(isReq?processGuideHtml():interviewGuideHtml()):""}
@@ -709,7 +849,15 @@ async function renderCaseDetailInto(el, id){
 function evidenceHtml(caseId){
   if(evidence.err) return `<span class="muted">${esc(evidence.err)}</span>`;
   if(!evidence.list.length) return '<span class="muted">No evidence uploaded.</span>';
-  return evidence.list.map(f=>`<div class="task"><span>${esc(f.name.replace(/^\d+_/,''))}</span><span class="due">${f.created_at?fmt(f.created_at):''}</span></div>`).join("");
+  return evidence.list.map(f=>`<div class="task"><span>${esc(f.name.replace(/^\d+_/,''))}</span>
+      <span class="due">${f.created_at?fmt(f.created_at):''}</span>
+      <button class="btn sm ghost" data-n="${esc(f.name)}" onclick="evDownload('${caseId}',this.dataset.n)">Download</button></div>`).join("")
+    + `<p class="note-sm" style="margin-top:8px">Files are locked once submitted — you can download them but not edit or replace them (audit integrity). Use the Interviews section for working notes and questions.</p>`;
+}
+async function evDownload(caseId, fname){
+  const { data, error } = await sb.storage.from("evidence").createSignedUrl(`${caseId}/${fname}`, 120);
+  if(error || !data?.signedUrl){ alert("Could not create a download link: " + (error?.message||"unknown error")); return; }
+  window.open(data.signedUrl, "_blank");
 }
 async function uploadCaseEvidence(caseId){
   const files = Array.from($("ev-file")?.files||[]);
@@ -718,6 +866,100 @@ async function uploadCaseEvidence(caseId){
     const { error } = await sb.storage.from("evidence").upload(`${caseId}/${Date.now()}_${f.name}`, f);
     if(error){ alert("Upload failed: "+errText(error)); return; }
   }
+  render();
+}
+// ---- allegations, policies, interviews, corrective actions (v4) ----
+let caseAllegs = [];
+async function addAllegationUI(caseId){
+  let v = $("alg-sel")?.value;
+  if(v === "__custom") v = ($("alg-custom")?.value || "").trim();
+  if(!v) return;
+  const { error } = await sb.rpc("add_allegation", { p_case_id: caseId, p_allegation: v });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function setFindingUI(id, f){
+  const { error } = await sb.rpc("set_finding", { p_id: id, p_finding: f || null });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function removeAllegationUI(id){
+  const { error } = await sb.rpc("remove_allegation", { p_id: id });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function addPolicyChip(caseId){
+  const v = $("pol-sel")?.value; if(!v) return;
+  const { data } = await sb.from("cases").select("policies").eq("id", caseId).maybeSingle();
+  const cur = (data?.policies || "").split(";").map(s=>s.trim()).filter(Boolean);
+  if(!cur.includes(v)) cur.push(v);
+  const { error } = await sb.rpc("set_policies", { p_case_id: caseId, p_policies: cur.join("; ") });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function removePolicyChip(caseId, p){
+  const { data } = await sb.from("cases").select("policies").eq("id", caseId).maybeSingle();
+  const cur = (data?.policies || "").split(";").map(s=>s.trim()).filter(Boolean).filter(x=>x!==p);
+  const { error } = await sb.rpc("set_policies", { p_case_id: caseId, p_policies: cur.join("; ") });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+// Interviews: explicit Save and notes-blur autosave both write straight to the DB.
+// Neither triggers a re-render, so typing/scroll position is never lost mid-interview.
+async function saveInterviewUI(caseId, id, silent){
+  const g = k => $(`iv-${k}-${id}`)?.value ?? null;
+  const { error } = await sb.rpc("save_interview", {
+    p_id: id, p_case_id: caseId,
+    p_interviewee: g("name"), p_role: g("role"), p_date: g("date") || null,
+    p_interviewer: g("by"), p_status: g("status"),
+    p_notes: $(`iv-notes-${id}`)?.value ?? null, p_follow_up: g("fu") });
+  const s = $(`iv-saved-${id}`);
+  if(error){ if(s) s.textContent = "Save failed"; if(!silent) alert(errText(error)); return; }
+  if(s) s.textContent = "Saved " + new Date().toLocaleTimeString();
+}
+async function addInterviewUI(caseId){
+  const name = ($("ni-name")?.value || "").trim();
+  if(!name){ alert("Enter the name of the person interviewed."); return; }
+  const { error } = await sb.rpc("save_interview", {
+    p_id: null, p_case_id: caseId, p_interviewee: name,
+    p_role: $("ni-role")?.value ?? null, p_date: $("ni-date")?.value || null,
+    p_interviewer: $("ni-by")?.value ?? null, p_status: "Scheduled",
+    p_notes: null, p_follow_up: null });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function deleteInterviewUI(id){
+  if(!confirm("Remove this interview (including its notes)?")) return;
+  const { error } = await sb.rpc("delete_interview", { p_id: id });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function saveActionUI(caseId, id){
+  const g = k => $(`ca-${k}-${id}`)?.value ?? null;
+  const { error } = await sb.rpc("save_corrective_action", {
+    p_id: id, p_case_id: caseId, p_action_type: g("type"),
+    p_responsible: g("resp"), p_due: g("due") || null,
+    p_completed: g("done") || null, p_notes: g("notes") });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function addActionUI(caseId){
+  const { error } = await sb.rpc("save_corrective_action", {
+    p_id: null, p_case_id: caseId, p_action_type: $("na-type")?.value,
+    p_responsible: $("na-resp")?.value ?? null, p_due: $("na-due")?.value || null,
+    p_completed: null, p_notes: null });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function deleteActionUI(id){
+  if(!confirm("Remove this corrective action?")) return;
+  const { error } = await sb.rpc("delete_corrective_action", { p_id: id });
+  if(error){ alert(errText(error)); return; }
+  render();
+}
+async function toggleTask(id, done){
+  const { error } = await sb.rpc("set_task_status", { p_task_id: id, p_done: done });
+  if(error){ alert(errText(error)); return; }
   render();
 }
 async function saveRisk(id){
@@ -799,6 +1041,8 @@ function setCloseSub(v){ closeModal.sub=v; closeModal.note=$("close-note")?.valu
 function setCloseStatus(v){ closeModal.status=v; closeModal.note=$("close-note")?.value||""; render(); }
 function renderCloseModal(){
   const isReq = closeModal.kind==="request";
+  const missing = caseAllegs.filter(a=>!a.finding).length;
+  const canCloseInc = caseAllegs.length > 0 && missing === 0;
   return `<div class="modal-overlay" onclick="if(event.target===this)cancelCloseModal()">
     <div class="modal">
       <h2 class="section" style="font-size:17px">${isReq?'Close this request':'Close this case'}</h2>
@@ -809,22 +1053,21 @@ function renderCloseModal(){
              <option value="">— select an outcome —</option>
              ${ACC_STATUS.map(s=>`<option ${closeModal.status===s?'selected':''}>${s}</option>`).join("")}
            </select>`
-        : `<p class="muted">Before closing, you must record whether the report was substantiated — was there evidence?</p>
-           <div class="radio-cards" style="margin-top:10px">
-             <div class="radio-card ${closeModal.sub===true?'sel':''}" onclick="setCloseSub(true)"><b>Substantiated</b><span class="muted">Yes — evidence supported the report.</span></div>
-             <div class="radio-card ${closeModal.sub===false?'sel':''}" onclick="setCloseSub(false)"><b>Not substantiated</b><span class="muted">No — evidence did not support it.</span></div>
-           </div>`}
+        : `<p class="muted">A case closes on its findings. Every allegation needs a finding recorded first.</p>
+           ${caseAllegs.length
+             ? `<ul style="margin:10px 0;padding-left:18px">${caseAllegs.map(a=>`<li style="margin-bottom:4px"><b>${esc(a.allegation)}</b> — ${a.finding?esc(a.finding):'<span style="color:#B42318">finding pending</span>'}</li>`).join("")}</ul>`
+             : `<div class="banner warn">No allegations recorded yet — add at least one (with a finding) in the Allegations section, then close.</div>`}`}
       <label>Closing note (optional)</label>
       <textarea id="close-note" style="min-height:70px">${esc(closeModal.note)}</textarea>
       <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
         <button class="btn ghost" onclick="cancelCloseModal()">Cancel</button>
-        <button class="btn" ${(isReq ? !closeModal.status : closeModal.sub===null)?'disabled':''} onclick="confirmClose()">${isReq?'Close request':'Close case'}</button>
+        <button class="btn" ${(isReq ? !closeModal.status : !canCloseInc)?'disabled':''} onclick="confirmClose()">${isReq?'Close request':'Close case'}</button>
       </div>
     </div></div>`;
 }
 async function confirmClose(){
   const isReq = closeModal.kind==="request";
-  if(isReq ? !closeModal.status : closeModal.sub===null) return;
+  if(isReq ? !closeModal.status : !(caseAllegs.length && caseAllegs.every(a=>a.finding))) return;
   const note = $("close-note")?.value || "";
   if(isReq){
     // write the outcome first (close_case refuses without one). Existing dates/duration
@@ -835,7 +1078,7 @@ async function confirmClose(){
       p_duration:$("acc-dur")?.value||null });
     if(e1){ alert(errText(e1)); return; }
   }
-  const { error } = await sb.rpc("close_case",{ p_case_id:closeModal.caseId, p_substantiated:isReq?null:closeModal.sub, p_note:note });
+  const { error } = await sb.rpc("close_case",{ p_case_id:closeModal.caseId, p_substantiated:null, p_note:note });
   if(error){ alert(errText(error)); return; }
   cancelCloseModal();
 }
@@ -854,7 +1097,7 @@ function renderLookup(){
         : lookup.result===null?`<div class="card" style="box-shadow:none"><span class="spin"></span></div>`
         : `<div class="banner ${lookup.result.length?'warn':'ok'}"><b>${lookup.result.length}</b> mention(s) in cases you can see.</div>
            ${lookup.result.length?`<table style="margin-top:8px"><thead><tr><th>Case</th><th>Their role</th><th>Status</th><th>Date</th></tr></thead>
-           <tbody>${lookup.result.map(r=>`<tr><td><span class="ref">${esc(r.ref)}</span></td><td>${esc(r.role_in_case)}</td><td>${pill(r.state)}</td><td>${fmt(r.created_at)}</td></tr>`).join("")}</tbody></table>`:""}`}`
+           <tbody>${lookup.result.map(r=>`<tr><td><span class="ref">${esc(r.ref)}</span></td><td>${esc(rlabel(r.role_in_case))}</td><td>${pill(r.state)}</td><td>${fmt(r.created_at)}</td></tr>`).join("")}</tbody></table>`:""}`}`
     : `<label>Find an employee</label>
       <input id="lk" type="text" placeholder="Search a name…" value="${esc(lookup.query)}" oninput="onLookupInput(this.value)">
       ${results.map(d=>`<div class="subj-result" onclick="pickLookup('${d.employee_id}')">${esc(d.name)} — <span class="muted">${esc(d.title||'')}${d.store?' · '+esc(d.store):''}</span></div>`).join("")}`}
