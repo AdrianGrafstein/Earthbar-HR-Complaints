@@ -474,7 +474,9 @@ function renderReceipt(r){
 
 // ---------------- DASHBOARD ----------------
 function setFilter(k,v){ filters[k]=v; }
-function applyFilters(){ filters.from = $("flt-from")?.value ?? filters.from; filters.to = $("flt-to")?.value ?? filters.to; render(); }
+function applyFilters(){ filters.q = $("flt-q")?.value ?? filters.q; filters.from = $("flt-from")?.value ?? filters.from; filters.to = $("flt-to")?.value ?? filters.to; render(); }
+// ^ filters.q must be captured HERE: render() paints "Loading…" (wiping #flt-q)
+//   before renderDashboardInto reads it, so reading at render-time gets nothing.
 function toggleFilters(){ showFilters=!showFilters; render(); }
 function setDashView(v){ dashView=v; showManual=false; filters={ q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"", acc:"", dur:"" }; render(); }
 async function renderDashboardInto(el){
