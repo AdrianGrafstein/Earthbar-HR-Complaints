@@ -35,3 +35,11 @@
 --    the 72h review task for incidents.
 --  * submit_case_v2 + p_us_state (13 params, old signature dropped); incidents
 --    enter at 'New'; state auto-derived from store_states when omitted.
+--  * delete_case updated (prod migration v4_delete_case_new_tables) to also
+--    remove case_allegations / case_interviews / corrective_actions — smoke
+--    test caught the FK violation.
+--
+-- VERIFIED (SQL impersonation, live DB): duplicate allegations ignored; close
+-- blocked at 0 findings and at 1-missing, succeeds when all set; interview
+-- notes editable after creation; corrective action completes; reporter (non-HR)
+-- sees 0 rows in all three new tables; full delete cleans every child.
