@@ -8,7 +8,10 @@
 //                  p_location, p_relationship, p_role, p_contact_email,
 //                  p_contact_phone, p_parties jsonb, p_manual bool, p_incident_date date)
 //     -> json { case_id, ref, anonymous, claim_code, handler, external, route_reason }
-//     p_parties: [{type:'employee'|'customer', id?, name?, role_in_case:'victim'|'subject'|'witness'}]
+//     p_parties: [{type:'employee'|'customer', id?, name?, role_in_case:'victim'|'subject'|
+//                  'witness'(legacy)|'witness_firsthand'|'witness_secondhand'|'reporter'}]
+//                 one element per person+role (multi-role = multiple elements);
+//                 the new role values need migration 015 (widened check constraint)
 //     Contact email/phone are stored on EVERY case (even anonymous) but are
 //     server-side only — never selectable by the dashboard.
 //   set_risk_level(p_case_id uuid, p_risk text)   -- 'Low'|'Medium'|'High'
@@ -69,10 +72,17 @@ const CATEGORIES = ["Manager conduct","Coworker conduct","Workplace safety","Pay
 const RELATIONSHIPS = ["Employee","Former employee","Customer","Vendor / partner","Other"];
 const REQUEST_TYPES = ["Accommodation — Religious","Accommodation — Medical","Accommodation — Other","Other request"];
 const RISKS = ["Low","Medium","High"];
-const PARTY_ROLES = ["subject","victim","witness"];
+// 8/18 sync call: "Subject" is displayed as "Implicated Person"; Witness is
+// split into firsthand / secondhand; "Reporter" added (someone reporting on
+// behalf of others). Stored values are kept stable for data continuity —
+// legacy rows with plain 'witness' stay valid and display as "Witness".
+// NOTE: the new stored values require migration 015 (widened role check).
+const PARTY_ROLES = ["subject","victim","witness_firsthand","witness_secondhand","reporter"];
 // Neutral wording (Vicky): stored value stays 'victim' for data continuity,
 // but it is ALWAYS displayed as "Impacted team member".
-const ROLE_LABEL = { subject:"Subject", victim:"Impacted team member", witness:"Witness" };
+const ROLE_LABEL = { subject:"Implicated Person", victim:"Impacted team member",
+  witness:"Witness", witness_firsthand:"Witness — firsthand", witness_secondhand:"Witness — secondhand",
+  reporter:"Reporter (on behalf of others)" };
 const rlabel = r => ROLE_LABEL[r] || r;
 // ER case lifecycle (Vicky) — incidents only; requests keep their own lifecycle.
 const INCIDENT_STATES = ["New","Assigned","UnderReview","Investigation","DecisionPending","ActionMonitoring","OnHold"];
@@ -124,7 +134,9 @@ let qform = { location:"", body:"", email:"", rtype:REQUEST_TYPES[0] };
 let dashView = "cases";
 let receipt = null, statusResult = null, myReports = [];
 let filters = { q:"", risk:"", cat:"", state:"", handler:"", from:"", to:"", acc:"", dur:"" };
-let deleteModal = { open:false, caseId:null, ref:"", armed:false };
+// 8/18 call: state changes need a second "save" click before anything is
+// recorded — first click arms the move, second click confirms it.
+let pendingAdvance = null;   // { id, to } while a state move awaits confirmation
 let showFilters = false, showGuide = false, showReassign = false;
 let hrTeam = [];
 let showManual = false, manual = blankIncident(true);
@@ -136,7 +148,7 @@ function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.get
 function blankIncident(isManual = false){
   return { anonymous:false, location:"", usState:"", relationship:"Employee", role:"",
     category:CATEGORIES[0], parties:[], pQuery:"", pType:"employee", pName:"",
-    pRole:"subject", description:"", email:"", phone:"", files:[], manual:isManual,
+    pRoles:["subject"], description:"", email:"", phone:"", files:[], manual:isManual,
     incidentDate: todayStr() };
 }
 // Location dropdown grouped by state; if a state is chosen, only its stores show.
@@ -166,14 +178,24 @@ const riskPill = r => r ? `<span class="pill r-${r}">${r}</span>` : '<span class
 const accPill = s => !s ? '<span class="muted">pending</span>'
   : `<span class="pill a-${s.split(' ')[0]}">${esc(s)}</span>`;
 const caseRisk = c => c.risk_level || (c.severity === "High" ? "High" : null);
+// 8/18: "Days open" on the dashboard alongside the SLA column.
+const daysOpen = (c, now) => {
+  const end = c.closed_at ? new Date(c.closed_at).getTime() : now;
+  const d = Math.max(0, Math.floor((end - new Date(c.created_at).getTime())/86400000));
+  return c.closed_at ? `${d}<span class="muted" style="font-size:11px"> (closed)</span>` : String(d);
+};
+// 8/18: hyperlinks in portal messages render as clickable links (input is
+// escaped FIRST, then bare http(s) URLs are wrapped).
+const linkify = s => esc(s).replace(/\bhttps?:\/\/[^\s<]+/g,
+  u => `<a href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>`);
 // Friendly message when a v2 RPC isn't deployed yet
 const errText = e => /function|does not exist|not exist|PGRST202|schema cache/i.test(e?.message||"")
   ? "This action needs the v2 backend, which isn't deployed yet." : (e?.message || "Unknown error");
 
 Object.assign(window, { go, sendOtp, verifyOtp, signOut,
-  setF, addParty, rmParty, onPartyInput, pickPartyEmp, submitIncident, submitRequest,
+  setF, addParty, rmParty, onPartyInput, pickPartyEmp, toggleRole, mToggleRole, submitIncident, submitRequest,
   setDashView, addNote, toggleGuide, saveAccommodation, toggleReassign, doReassign, setCloseStatus,
-  askDelete, cancelDelete, armDelete, doDelete,
+  cancelAdvance,
   addAllegationUI, setFindingUI, removeAllegationUI, addPolicyChip, removePolicyChip,
   saveInterviewUI, addInterviewUI, deleteInterviewUI, saveActionUI, addActionUI, deleteActionUI,
   toggleTask, evDownload,
@@ -269,7 +291,7 @@ function renderLogin(){
     <div class="banner err">Configuration needed: set <b>SUPABASE_URL</b> and <b>SUPABASE_ANON_KEY</b> in <code>config.js</code>. See the README.</div></div>`;
   return `<div class="card" style="max-width:520px;margin:40px auto">
     ${signedOutReason==="idle"?`<div class="banner warn" style="margin-bottom:14px"><b>You were signed out.</b> For security, sessions end after 24 hours without use. Sign in again to continue.</div>`:""}
-    <h2 class="section">Sign in to Earthbar HR</h2>
+    <h2 class="section">Sign in to the People Support Portal</h2>
     <p class="muted">Enter your email and we'll send you a one-time code. You don't need an @earthbar.com account — any email works.</p>
     ${!auth.sent ? `
       <label>Email address</label>
@@ -346,8 +368,8 @@ async function submitRequest(){
 // ---------------- INCIDENT INTAKE ----------------
 function partyBuilder(f, pre){
   // pre = "" for reporter form, "m" for manual-entry form (separate handlers)
-  const P = pre ? {input:"mOnPartyInput",pick:"mPickPartyEmp",add:"mAddParty",rm:"mRmParty",set:"setM"}
-                : {input:"onPartyInput",pick:"pickPartyEmp",add:"addParty",rm:"rmParty",set:"setF"};
+  const P = pre ? {input:"mOnPartyInput",pick:"mPickPartyEmp",add:"mAddParty",rm:"mRmParty",set:"setM",role:"mToggleRole"}
+                : {input:"onPartyInput",pick:"pickPartyEmp",add:"addParty",rm:"rmParty",set:"setF",role:"toggleRole"};
   const results = f.pType==="employee" && f.pQuery.length>=2 ? dirList.filter(d =>
       (d.name||"").toLowerCase().includes(f.pQuery.toLowerCase()) ||
       (d.title||"").toLowerCase().includes(f.pQuery.toLowerCase())).slice(0,8) : [];
@@ -356,8 +378,8 @@ function partyBuilder(f, pre){
     <div class="row" style="align-items:flex-end">
       <div class="col" style="min-width:130px"><span class="mini-l">They are a…</span>
         <select onchange="${P.set}('pType',this.value)"><option value="employee" ${f.pType==='employee'?'selected':''}>Earthbar employee</option><option value="customer" ${f.pType==='customer'?'selected':''}>Customer</option></select></div>
-      <div class="col" style="min-width:130px"><span class="mini-l">Their role in this</span>
-        <select onchange="${P.set}('pRole',this.value)">${PARTY_ROLES.map(r=>`<option value="${r}" ${f.pRole===r?'selected':''}>${rlabel(r)}</option>`).join("")}</select></div>
+      <div class="col" style="min-width:190px"><span class="mini-l">Their role(s) in this <span style="text-transform:none;letter-spacing:0;font-weight:400">— pick all that apply</span></span>
+        <div class="role-multi">${PARTY_ROLES.map(r=>`<label class="role-opt"><input type="checkbox" ${f.pRoles.includes(r)?'checked':''} onchange="${P.role}('${r}',this.checked)"> ${rlabel(r)}</label>`).join("")}</div></div>
       <div class="col" style="min-width:220px">
         ${f.pType==="employee"
           ? `<span class="mini-l">Find the employee</span><input id="${pre}psearch" type="text" placeholder="Search a name or title…" value="${esc(f.pQuery)}" oninput="${P.input}(this.value)">`
@@ -420,8 +442,24 @@ function renderIncident(){
 }
 function setF(k,v,silent){ form[k]=v; if(!silent) render(); }
 function onPartyInput(v){ form.pQuery=v; render(); const el=$("psearch"); if(el){el.focus();el.setSelectionRange(v.length,v.length);} }
-function pickPartyEmp(id){ if(!form.parties.some(p=>p.id===id)) form.parties.push({type:"employee",id,role_in_case:form.pRole}); form.pQuery=""; render(); }
-function addParty(){ const n=($("pname")?.value||form.pName||"").trim(); if(!n)return; form.parties.push({type:"customer",name:n,role_in_case:form.pRole}); form.pName=""; render(); }
+// Multi-select roles (8/18): one case_parties row per person+role. Selecting
+// several roles is optional — e.g. a reporter can also be flagged as a witness.
+function toggleRole(r,on){ const s=new Set(form.pRoles); if(on)s.add(r);else s.delete(r); form.pRoles=[...s]; render(); }
+function rolesOrWarn(f){
+  if(!f.pRoles.length){ alert("Select at least one role for this person (only one is required)."); return null; }
+  return f.pRoles;
+}
+function pickPartyEmp(id){
+  const roles = rolesOrWarn(form); if(!roles) return;
+  for(const r of roles) if(!form.parties.some(p=>p.id===id&&p.role_in_case===r)) form.parties.push({type:"employee",id,role_in_case:r});
+  form.pQuery=""; render();
+}
+function addParty(){
+  const n=($("pname")?.value||form.pName||"").trim(); if(!n)return;
+  const roles = rolesOrWarn(form); if(!roles) return;
+  for(const r of roles) if(!form.parties.some(p=>p.type==="customer"&&p.name===n&&p.role_in_case===r)) form.parties.push({type:"customer",name:n,role_in_case:r});
+  form.pName=""; render();
+}
 function rmParty(i){ form.parties.splice(i,1); render(); }
 
 async function submitIncident(){
@@ -560,7 +598,7 @@ async function renderDashboardInto(el){
     ${showManual&&!isReq?renderManual():""}
     <div class="card" style="padding:8px 0"><table>
       ${isReq
-      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Requester</th><th>Case owner</th><th>State</th><th>Outcome</th><th></th></tr></thead>
+      ? `<thead><tr><th style="padding-left:20px">Ref</th><th>Request type</th><th>Opened</th><th>Requester</th><th>Case owner</th><th>State</th><th>Outcome</th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${esc(c.category)}</td>
@@ -569,9 +607,8 @@ async function renderDashboardInto(el){
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
         <td>${accPill(c.accommodation_status)}</td>
-        <td><button class="btn sm ghost" onclick="event.stopPropagation();askDelete('${c.id}','${c.state}','${esc(c.ref)}')">Delete</button></td>
-      </tr>`).join("") : `<tr><td colspan="8" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
-      : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Location</th><th>Reporter</th><th>Involved</th><th>Handler</th><th>Status</th><th>SLA</th><th></th></tr></thead>
+      </tr>`).join("") : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--grey)">No requests match.</td></tr>`}</tbody>`
+      : `<thead><tr><th style="padding-left:20px">Ref</th><th>Risk</th><th>Category</th><th>Opened</th><th>Location</th><th>Reporter</th><th>Involved</th><th>Handler</th><th>Status</th><th>Days open</th><th>SLA</th></tr></thead>
       <tbody>${shown.length ? shown.map(c=>`<tr class="clk ${overdue(c)?'overdue':''}" onclick="openCase('${c.id}')">
         <td style="padding-left:20px"><span class="ref">${esc(c.ref)}</span></td>
         <td>${riskPill(caseRisk(c))}</td>
@@ -582,40 +619,17 @@ async function renderDashboardInto(el){
         <td>${esc(involved(c))||'—'}</td>
         <td>${c.external?'External advisor <span class="warnbadge">EXT</span>':esc(nameOf(c.handler_id))}</td>
         <td>${pill(c.state)}</td>
+        <td>${daysOpen(c, now)}</td>
         <td>${overdue(c)?'<span class="pill due-over">Overdue</span>':'<span class="pill due-ok">On track</span>'}</td>
-        <td><button class="btn sm ghost" onclick="event.stopPropagation();askDelete('${c.id}','${c.state}','${esc(c.ref)}')">Delete</button></td>
       </tr>`).join("") : `<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--grey)">No cases match.</td></tr>`}</tbody>`}
-    </table></div>
-    ${deleteModal.open?renderDeleteModal():""}`;
+    </table></div>`;
 }
-// ---- delete (closed cases only; two-step confirmation) ----
-function askDelete(id, state, ref){
-  if(state !== "Closed"){ alert("Cannot delete an open case"); return; }
-  deleteModal = { open:true, caseId:id, ref, armed:false };
-  render();
-}
-function cancelDelete(){ deleteModal = { open:false, caseId:null, ref:"", armed:false }; render(); }
-function armDelete(){ deleteModal.armed = true; render(); }
-async function doDelete(){
-  const { error } = await sb.rpc("delete_case", { p_case_id: deleteModal.caseId });
-  if(error){ alert(errText(error)); return; }
-  cancelDelete();
-}
-function renderDeleteModal(){
-  return `<div class="modal-overlay" onclick="if(event.target===this)cancelDelete()">
-    <div class="modal">
-      <h2 class="section" style="font-size:17px">Delete ${esc(deleteModal.ref)}?</h2>
-      <p class="muted">Are you sure you want to delete this closed case? Everything — notes, messages, evidence, and the audit log — is permanently removed. This cannot be undone.</p>
-      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;align-items:center">
-        <button class="btn ghost" onclick="cancelDelete()">Cancel</button>
-        ${deleteModal.armed
-          ? `<button class="btn" style="background:#B42318;color:#fff" onclick="doDelete()">Permanently delete</button>`
-          : `<button class="btn sec" onclick="armDelete()">Yes, I'm sure</button>`}
-      </div>
-    </div></div>`;
-}
-function openCase(id){ selected=id; evidence={list:[],err:""}; showReassign=false; showGuide=false; render(); window.scrollTo({top:0,behavior:"smooth"}); }
-function closeCase(){ selected=null; render(); }
+// 8/18 call: cases are NEVER deleted from the UI any more — a bad/duplicate
+// case should be categorized (e.g. "faulty") instead. The delete_case RPC still
+// exists server-side but the dashboard no longer offers it. The "faulty"
+// category itself needs a schema decision (see PR notes).
+function openCase(id){ selected=id; evidence={list:[],err:""}; showReassign=false; showGuide=false; pendingAdvance=null; render(); window.scrollTo({top:0,behavior:"smooth"}); }
+function closeCase(){ selected=null; pendingAdvance=null; render(); }
 
 // ---- manual case entry (for reports that reach Lindsey by email first) ----
 function toggleManual(){ showManual=!showManual; if(showManual) manual=blankIncident(true); render(); }
@@ -638,8 +652,18 @@ function renderManual(){
 }
 function setM(k,v,silent){ manual[k]=v; if(!silent) render(); }
 function mOnPartyInput(v){ manual.pQuery=v; render(); const el=$("mpsearch"); if(el){el.focus();el.setSelectionRange(v.length,v.length);} }
-function mPickPartyEmp(id){ if(!manual.parties.some(p=>p.id===id)) manual.parties.push({type:"employee",id,role_in_case:manual.pRole}); manual.pQuery=""; render(); }
-function mAddParty(){ const n=($("mpname")?.value||manual.pName||"").trim(); if(!n)return; manual.parties.push({type:"customer",name:n,role_in_case:manual.pRole}); manual.pName=""; render(); }
+function mToggleRole(r,on){ const s=new Set(manual.pRoles); if(on)s.add(r);else s.delete(r); manual.pRoles=[...s]; render(); }
+function mPickPartyEmp(id){
+  const roles = rolesOrWarn(manual); if(!roles) return;
+  for(const r of roles) if(!manual.parties.some(p=>p.id===id&&p.role_in_case===r)) manual.parties.push({type:"employee",id,role_in_case:r});
+  manual.pQuery=""; render();
+}
+function mAddParty(){
+  const n=($("mpname")?.value||manual.pName||"").trim(); if(!n)return;
+  const roles = rolesOrWarn(manual); if(!roles) return;
+  for(const r of roles) if(!manual.parties.some(p=>p.type==="customer"&&p.name===n&&p.role_in_case===r)) manual.parties.push({type:"customer",name:n,role_in_case:r});
+  manual.pName=""; render();
+}
 function mRmParty(i){ manual.parties.splice(i,1); render(); }
 async function submitManual(){
   manual.description = $("m-desc")?.value || ""; manual.email = ($("m-email")?.value||"").trim();
@@ -741,8 +765,13 @@ async function renderCaseDetailInto(el, id){
     </div>`:""}
     <div class="divider"></div>
     <b style="font-size:13px">${isReq?'Move this request to':'Advance case state'}</b>
+    <p class="note-sm" style="margin:4px 0 0">Click a state, then click <b>Save</b> to confirm — nothing is recorded until you save. Moving backwards is allowed.</p>
     <div style="margin-top:8px">
-      ${nexts.map(n=>`<button class="btn sm sec" style="margin-right:8px;margin-bottom:6px" onclick="doAdvance('${c.id}','${n}')">→ ${stlabel(n)}</button>`).join("")}
+      ${nexts.map(n=> (pendingAdvance && pendingAdvance.id===c.id && pendingAdvance.to===n)
+        ? `<span style="display:inline-flex;gap:6px;margin-right:8px;margin-bottom:6px;align-items:center">
+             <button class="btn sm" onclick="doAdvance('${c.id}','${n}')">Save — move to ${stlabel(n)}</button>
+             <button class="btn sm ghost" onclick="cancelAdvance()">Cancel</button></span>`
+        : `<button class="btn sm sec" style="margin-right:8px;margin-bottom:6px" onclick="doAdvance('${c.id}','${n}')">→ ${stlabel(n)}</button>`).join("")}
       ${canClose?`<button class="btn sm" style="background:var(--red)" onclick="openCloseModal('${c.id}','${isReq?'request':'incident'}')">${isReq?'Close request…':'Close case…'}</button>`:""}
       ${!nexts.length&&!canClose?'<span class="muted">Case is closed.</span>':""}
     </div>
@@ -781,7 +810,7 @@ async function renderCaseDetailInto(el, id){
       <div class="iv-row" id="iv-${iv.id}">
         <div class="iv-grid">
           <span><span class="mini-l">Person interviewed</span><input id="iv-name-${iv.id}" type="text" value="${esc(iv.interviewee)}"></span>
-          <span><span class="mini-l">Role in case</span><select id="iv-role-${iv.id}">${["subject","victim","witness","Other"].map(r=>`<option value="${r}" ${iv.role_in_case===r?'selected':''}>${rlabel(r)}</option>`).join("")}</select></span>
+          <span><span class="mini-l">Role in case</span><select id="iv-role-${iv.id}">${[...new Set([...PARTY_ROLES, ...(iv.role_in_case?[iv.role_in_case]:[]), "Other"])].map(r=>`<option value="${r}" ${iv.role_in_case===r?'selected':''}>${rlabel(r)}</option>`).join("")}</select></span>
           <span><span class="mini-l">Date</span><input id="iv-date-${iv.id}" type="date" value="${esc(iv.interview_date||'')}"></span>
           <span><span class="mini-l">Interviewer</span><input id="iv-by-${iv.id}" type="text" value="${esc(iv.interviewer||'')}"></span>
           <span><span class="mini-l">Status</span><select id="iv-status-${iv.id}">${INTERVIEW_STATUS.map(s=>`<option ${iv.status===s?'selected':''}>${s}</option>`).join("")}</select></span>
@@ -800,7 +829,7 @@ async function renderCaseDetailInto(el, id){
     <span class="mini-l">Add an interview</span>
     <div class="iv-grid" style="margin-top:6px">
       <span><span class="mini-l">Person interviewed</span><input id="ni-name" type="text" placeholder="Name"></span>
-      <span><span class="mini-l">Role in case</span><select id="ni-role">${["subject","victim","witness","Other"].map(r=>`<option value="${r}">${rlabel(r)}</option>`).join("")}</select></span>
+      <span><span class="mini-l">Role in case</span><select id="ni-role">${[...PARTY_ROLES,"Other"].map(r=>`<option value="${r}">${rlabel(r)}</option>`).join("")}</select></span>
       <span><span class="mini-l">Date</span><input id="ni-date" type="date"></span>
       <span><span class="mini-l">Interviewer</span><input id="ni-by" type="text" value="${esc(me?.name||'')}"></span>
     </div>
@@ -842,7 +871,7 @@ async function renderCaseDetailInto(el, id){
     ${(events||[]).map(e=>`<li><div class="t">${fmt(e.at)} · ${esc(e.type)}</div><div class="e">${esc(e.note)}</div></li>`).join("")}
   </ul></div>
   <div class="card"><b>Messages ${c.anonymous?'<span class="chip">relayed — reporter stays anonymous</span>':''}</b>
-    <div class="msgwrap" style="margin:12px 0">${(messages||[]).length?messages.map(m=>`<div class="msg ${m.sender_type}"><div class="who">${m.sender_type==='handler'?esc(handlerName):(c.anonymous?'Anonymous reporter':esc(c.reporter_display||'Reporter'))}</div>${esc(m.body)}</div>`).join(""):'<span class="muted">No messages yet.</span>'}</div>
+    <div class="msgwrap" style="margin:12px 0">${(messages||[]).length?messages.map(m=>`<div class="msg ${m.sender_type}"><div class="who">${m.sender_type==='handler'?esc(handlerName):(c.anonymous?'Anonymous reporter':esc(c.reporter_display||'Reporter'))}</div>${linkify(m.body)}</div>`).join(""):'<span class="muted">No messages yet.</span>'}</div>
     <p class="note-sm">Messages are also emailed to the reporter automatically${c.anonymous?" — without revealing their address to you":""}.</p>
     <div style="display:flex;gap:8px"><input id="hmsg" type="text" placeholder="Message the reporter…"><button class="btn" onclick="sendHandlerMsg('${c.id}')">Send</button></div>
   </div>
@@ -1033,7 +1062,16 @@ async function addNote(id){
   if(error){ alert(errText(error)); return; }
   render();
 }
-async function doAdvance(id,to){ const {error}=await sb.rpc("advance_state",{p_case_id:id,p_to:to}); if(error)alert(errText(error)); render(); }
+// Two-click state change (8/18): the first click only ARMS the move (nothing is
+// written or tracked); the second "Save" click actually calls advance_state.
+// Backwards moves are allowed. Every confirmed change is logged server-side in
+// case_events with the user who made it (advance_state records the actor email).
+async function doAdvance(id,to){
+  if(!(pendingAdvance && pendingAdvance.id===id && pendingAdvance.to===to)){ pendingAdvance={id,to}; render(); return; }
+  pendingAdvance=null;
+  const {error}=await sb.rpc("advance_state",{p_case_id:id,p_to:to}); if(error)alert(errText(error)); render();
+}
+function cancelAdvance(){ pendingAdvance=null; render(); }
 async function sendHandlerMsg(id){ const v=$("hmsg")?.value.trim(); if(!v)return; const {error}=await sb.rpc("post_handler_message",{p_case_id:id,p_body:v}); if(error)alert(errText(error)); render(); }
 
 // ---- close-case modal (substantiated y/n is REQUIRED) ----
@@ -1147,7 +1185,7 @@ function renderStatusCard(s){
     <div class="kv"><span class="k">Status</span>${pill(s.state)}</div>
     <div class="kv"><span class="k">Handled by</span><span>${esc(s.handler||'—')}</span></div>
     <b style="font-size:13px;display:block;margin-top:14px">Messages with HR</b>
-    <div class="msgwrap" style="margin:10px 0">${(s.messages||[]).length?s.messages.map(m=>`<div class="msg ${m.sender==='handler'?'handler':'reporter'}"><div class="who">${m.sender==='handler'?'HR':'You'}</div>${esc(m.body)}</div>`).join(""):'<span class="muted">No messages yet.</span>'}</div>
+    <div class="msgwrap" style="margin:10px 0">${(s.messages||[]).length?s.messages.map(m=>`<div class="msg ${m.sender==='handler'?'handler':'reporter'}"><div class="who">${m.sender==='handler'?'HR':'You'}</div>${linkify(m.body)}</div>`).join(""):'<span class="muted">No messages yet.</span>'}</div>
     <div style="display:flex;gap:8px"><input id="rmsg" type="text" placeholder="Reply to HR (still anonymous)…"><button class="btn sec" onclick="sendReporterReply()">Send</button></div>`;
 }
 async function sendReporterReply(){
