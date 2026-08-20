@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Earthbar · HR Case Management</title>
+<title>People Support Portal · Earthbar & Beaming</title>
 <style>
   :root{
     --ink:#111111; --bg:#ffffff; --muted:#6b6b6b; --line:#e5e5e5;
@@ -172,13 +172,22 @@
   input[type=file]{font-size:13px}
   .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:grid;place-items:center;z-index:50;padding:16px}
   .modal{background:#fff;border-radius:var(--radius);border:1px solid var(--ink);padding:24px;max-width:520px;width:100%}
+  /* 8/18: multi-select role checkboxes in the party builder */
+  .role-multi{border:1px solid #d2d2d2;border-radius:var(--radius);background:#fff;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+  .role-opt{display:flex;align-items:center;gap:7px;font-weight:400;font-size:13px;text-transform:none;letter-spacing:0;margin:0;color:var(--ink);cursor:pointer}
+  .role-opt input[type=checkbox]{margin:0}
+  /* 8/18: clickable links inside portal messages (readable on the dark handler bubble too) */
+  .msg a{color:inherit;text-decoration:underline}
 </style>
 </head>
 <body>
 <header class="top">
+  <!-- 8/18 call: app renamed to People Support Portal (PSP); Beaming shown alongside Earthbar -->
   <div class="brand">earthbar</div>
   <div class="rule"></div>
-  <div class="sub">HR Case Management</div>
+  <div class="brand" style="font-weight:400">beaming</div>
+  <div class="rule"></div>
+  <div class="sub">People Support Portal</div>
   <span id="userbox"></span>
 </header>
 <nav id="nav"></nav>
